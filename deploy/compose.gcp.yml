@@ -1,0 +1,16 @@
+# Added on GCP through COMPOSE_FILE in deploy/gcp-settings.env: every container's output goes to
+# Google Cloud Logging (searchable in the dashboard under Admin -> Logs, kept 30 days).
+# `docker compose logs` keeps working: Docker also keeps a local copy.
+x-gcp-logging: &gcp-logging
+  driver: gcplogs
+  options: !reset {}
+
+services:
+  db: { logging: *gcp-logging }
+  certs: { logging: *gcp-logging }
+  init: { logging: *gcp-logging }
+  mosquitto: { logging: *gcp-logging }
+  ingestor: { logging: *gcp-logging }
+  api: { logging: *gcp-logging }
+  simulator-ui: { logging: *gcp-logging }
+  web: { logging: *gcp-logging }

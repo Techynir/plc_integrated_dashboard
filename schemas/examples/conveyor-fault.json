@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "device_id": "plc-conveyor-02",
+  "ts": "2026-09-26T10:15:31.000Z",
+  "seq": 5521,
+  "status": "FAULT",
+  "tags": {
+    "belt_speed_mps": 0.0,
+    "motor_current_a": 0.2,
+    "motor_temp_c": 91.3,
+    "motor_running": false,
+    "estop_active": true,
+    "fault_code": 214
+  },
+  "quality": {
+    "belt_speed_mps": "BAD"
+  }
+}

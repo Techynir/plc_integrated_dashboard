@@ -1,0 +1,160 @@
+# PLC Integrated Dashboard — full stack.
+# Local:  cp .env.example .env && docker compose up -d --build
+# Web simulator:  http://localhost:8081 (dashboard: http://localhost:8080)
+name: plc-integrated-dashboard
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://plc:${DB_PASSWORD:-plc-dev-password}@db:5432/plc
+  MQTT_HOST: mosquitto
+  MQTT_PORT: "1883"
+  MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD:-dev-mqtt-admin-password}
+  MQTT_DB_PASSWORD: ${MQTT_DB_PASSWORD:-dev-mqtt-db-password}
+  INGESTOR_MQTT_PASSWORD: ${INGESTOR_MQTT_PASSWORD:-dev-ingestor-password}
+  SIMULATOR_MQTT_PASSWORD: ${SIMULATOR_MQTT_PASSWORD:-dev-simulator-password}
+  SIM_DEVICE_TTL_MIN: ${SIM_DEVICE_TTL_MIN:-30}
+  DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:8080}
+  SIMULATOR_URL: ${SIMULATOR_URL:-http://localhost:8081}
+  MQTT_PUBLIC_HOST: ${MQTT_PUBLIC_HOST:-localhost}
+  MQTT_PUBLIC_TLS_PORT: "8883"
+  MQTT_EXTRA_SANS: ${MQTT_EXTRA_SANS:-}
+  CERTS_DIR: /certs
+  JWT_SECRET: ${JWT_SECRET:-dev-insecure-jwt-secret}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+  OPERATOR_EMAIL: ${OPERATOR_EMAIL:-}
+  OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-}
+
+services:
+  db:
+    image: timescale/timescaledb:2.30.1-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: plc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-plc-dev-password}
+      POSTGRES_DB: plc
+      TIMESCALEDB_TELEMETRY: "off"
+      # Sized for a 2 GB e2-small VM.
+      TS_TUNE_MEMORY: ${DB_MEMORY:-512MB}
+      TS_TUNE_NUM_CPUS: "2"
+    # Loopback only: reach it from your laptop through an SSH tunnel (docs/OPERATIONS.md).
+    ports:
+      - "127.0.0.1:${DB_LOCAL_PORT:-5432}:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plc -d plc"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  # One-shot: generate the MQTT TLS CA + server certificate (kept across deploys).
+  certs:
+    build: ./services/api
+    command: ["python", "-m", "app.certs"]
+    user: "0"
+    environment: *app-env
+    volumes:
+      - certs:/certs
+    logging: *logging
+
+  # Mosquitto with the go-auth plugin: logins/permissions are checked in PostgreSQL.
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    restart: unless-stopped
+    depends_on:
+      init: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:${MQTT_LOCAL_PORT:-1883}:1883"
+      - "${MQTT_TLS_PORT:-8883}:8883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - brokerconf:/mosquitto/conf.d:ro
+      - mqdata:/mosquitto/data
+      - certs:/certs:ro
+    logging: *logging
+
+  # One-shot: DB migrations, first admin user, MQTT logins in the DB, broker DB settings.
+  init:
+    build: ./services/api
+    command: ["python", "-m", "app.bootstrap"]
+    user: "0"  # writes the broker's config and data volumes
+    environment: *app-env
+    volumes:
+      - brokerconf:/brokerconf
+      - mqdata:/mqdata
+    depends_on:
+      db: { condition: service_healthy }
+      certs: { condition: service_completed_successfully }
+    logging: *logging
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: services/ingestor/Dockerfile
+    restart: unless-stopped
+    environment: *app-env
+    depends_on:
+      init: { condition: service_completed_successfully }
+      mosquitto: { condition: service_started }
+    logging: *logging
+
+  api:
+    build: ./services/api
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      init: { condition: service_completed_successfully }
+      mosquitto: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/caddy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      SIM_SITE_ADDRESS: ${SIM_SITE_ADDRESS:-:81}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "127.0.0.1:${SIM_HTTP_PORT:-8081}:81"
+    volumes:
+      - caddydata:/data
+    depends_on:
+      - api
+      - simulator-ui
+    logging: *logging
+
+  # Web simulator (separate site, SIM_SITE_ADDRESS): operators publish test messages as simulated PLCs.
+  simulator-ui:
+    build: ./services/api
+    restart: unless-stopped
+    command: ["uvicorn", "app.sim.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log"]
+    environment: *app-env
+    depends_on:
+      init: { condition: service_completed_successfully }
+      mosquitto: { condition: service_started }
+    logging: *logging
+
+volumes:
+  dbdata:
+  mqdata:
+  brokerconf:
+  certs:
+  caddydata:

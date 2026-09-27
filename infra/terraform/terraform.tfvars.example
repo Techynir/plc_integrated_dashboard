@@ -1,0 +1,10 @@
+project_id = "my-gcp-project"
+
+# From `terraform output` in infra/bootstrap:
+deployer_service_account = "plc-deployer@my-gcp-project.iam.gserviceaccount.com"
+runtime_service_account  = "plc-runtime@my-gcp-project.iam.gserviceaccount.com"
+
+# region       = "asia-south1"
+# zone         = "asia-south1-a"
+# machine_type = "e2-small"
+# mqtt_source_ranges = ["203.0.113.10/32"]  # plant's public IP

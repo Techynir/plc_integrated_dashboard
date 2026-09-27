@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PLC Simulator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23eb6834'/%3E%3Cpath d='M9 8l14 8-14 8z' fill='%23fff'/%3E%3C/svg%3E" />
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee; --hover: #efeee9;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #75736e;
+  --border: rgba(11,11,11,.1); --border-strong: rgba(11,11,11,.18);
+  --accent: #2a78d6; --accent-soft: #cde2fb; --sim: #eb6834; --sim-soft: #fde6dc;
+  --good: #0ca30c; --critical: #d03b3b; --critical-soft: #fbe4e4; --offline: #898781;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #222220; --hover: #2a2a28;
+    --ink: #fff; --ink-2: #c3c2b7; --muted: #9a988f;
+    --border: rgba(255,255,255,.1); --border-strong: rgba(255,255,255,.18);
+    --accent: #3987e5; --accent-soft: #184f95; --sim: #d95926; --sim-soft: #3a2116; --critical-soft: #3a1b1b;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+h1, h2, h3 { margin: 0; font-weight: 600; } h1 { font-size: 19px; } h2 { font-size: 15px; } h3 { font-size: 13px; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+code, textarea, .mono { font-family: var(--mono); font-size: 12.5px; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--sim); display: grid; place-items: center; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.spacer { flex: 1; }
+main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; padding: 18px 20px 40px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 14px 16px 32px; } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; }
+.card-h { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.card-b { padding: 14px 16px; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; }
+@media (max-width: 600px) { .grid { grid-template-columns: 1fr 1fr; } }
+label { display: grid; gap: 4px; align-content: start; font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+input, select, textarea { font: inherit; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); min-width: 0; width: 100%; }
+textarea { min-height: 110px; resize: vertical; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { font: inherit; font-weight: 500; padding: 7px 13px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); cursor: pointer; white-space: nowrap; }
+button:hover { background: var(--hover); } button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--sim); border-color: var(--sim); color: #fff; font-weight: 600; }
+button.small { padding: 3px 9px; font-size: 12.5px; } button.ghost { border-color: transparent; background: transparent; }
+button.danger { color: var(--critical); }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 12px; font-size: 12.5px; }
+.seg button + button { border-left: 1px solid var(--border); } .seg button.on { background: var(--accent-soft); font-weight: 600; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hint { font-size: 12px; color: var(--muted); font-weight: 400; }
+.topic { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); padding: 5px 9px; border-radius: 7px; word-break: break-all; }
+.preview { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); padding: 9px 11px; border-radius: 8px; min-height: 38px; }
+.err { color: var(--critical); font-size: 13px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13px; }
+th { font-size: 12px; color: var(--ink-2); background: var(--surface-2); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+.vals-wrap { overflow-x: auto; } .vals { min-width: 560px; } .vals td { padding: 5px 6px; } .vals input, .vals select { padding: 5px 7px; }
+.empty { padding: 20px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+.bar { height: 5px; border-radius: 3px; background: var(--accent-soft); overflow: hidden; margin-top: 4px; min-width: 80px; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login .card { width: min(380px, 100%); padding: 26px; display: grid; gap: 12px; }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 12.5px; }
+.ph-table td { font-size: 12px; padding: 3px 8px 3px 0; border: 0; }
+.log-entry { border-bottom: 1px solid var(--border); padding: 7px 16px; }
+.log-entry:last-child { border-bottom: 0; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="login hidden">
+  <div class="card">
+    <div class="row"><div class="logo"><svg width="14" height="14" viewBox="0 0 32 32"><path d="M9 8l14 8-14 8z" fill="#fff"/></svg></div><h1>PLC Simulator</h1></div>
+    <p id="gate-msg" style="margin:0"></p>
+    <a id="gate-link" class="hint"></a>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="logo"><svg width="14" height="14" viewBox="0 0 32 32"><path d="M9 8l14 8-14 8z" fill="#fff"/></svg></div>
+    <h1>PLC Simulator</h1>
+    <span class="pill" id="broker-pill"><span class="dot"></span><span></span></span>
+    <span class="spacer"></span>
+    <a id="dash-link" target="_blank" rel="noopener">Open dashboard ↗</a>
+    <span class="hint" id="who"></span>
+    <button class="small" id="logout">Sign out</button>
+  </header>
+
+  <main>
+    <section>
+      <div class="card">
+        <div class="card-h"><h2>1. Target</h2><span class="hint">For testing only</span></div>
+        <div class="card-b">
+          <div class="grid">
+            <label>Site <input id="site" value="demo" pattern="[A-Za-z0-9_-]{1,64}"></label>
+            <label>Line <input id="line" value="line1" pattern="[A-Za-z0-9_-]{1,64}"></label>
+            <label>Device ID <input id="device" value="sim-plc-01" list="device-list" pattern="[A-Za-z0-9_-]{1,60}"></label>
+            <label>Devices <input id="ndev" type="number" min="1" max="20" value="1"><span class="hint" id="ndev-hint">one device</span></label>
+          </div>
+          <datalist id="device-list"></datalist>
+          <label style="margin-top:12px">Topic
+            <input id="topic-tpl" list="topic-list" spellcheck="false" value="sim/{{site}}/{{line}}/{{device}}/telemetry">
+            <span class="hint">Must start with <b>sim/</b>, <b>plc/</b> or <b>test/</b>. {{site}}, {{line}} and {{device}} are filled in from the fields above.</span>
+          </label>
+          <datalist id="topic-list">
+            <option value="sim/{{site}}/{{line}}/{{device}}/telemetry">
+            <option value="plc/{{site}}/{{line}}/{{device}}/telemetry">
+            <option value="test/{{device}}">
+          </datalist>
+          <div style="margin-top:8px" class="hint">Sends to: <span class="topic" id="topic"></span></div>
+          <div id="topic-note" class="hint" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">
+          <h2>2. Message</h2><span class="spacer"></span>
+          <div class="seg" id="mode-seg"><button data-mode="builder" class="on">Auto values</button><button data-mode="custom">Custom text</button></div>
+        </div>
+        <div class="card-b">
+          <div id="builder">
+            <div class="row" style="margin-bottom:10px">
+              <label style="min-width:260px">Format
+                <select id="format">
+                  <option value="array">Array — result: [v1, v2, …]</option>
+                  <option value="object">JSON object — {"name": value}</option>
+                  <option value="canonical">Canonical JSON (schema v1)</option>
+                </select>
+              </label>
+              <label id="array-name-wrap" style="width:140px">Array name <input id="array-name" value="result"></label>
+            </div>
+            <div class="vals-wrap"><table class="vals">
+              <thead><tr><th style="width:24%">Name</th><th style="width:22%">Values</th><th>Min</th><th>Max</th><th>Decimals</th><th></th></tr></thead>
+              <tbody id="vals"></tbody>
+            </table></div>
+            <div class="row" style="margin-top:8px">
+              <button class="small" id="add-val">+ Add value</button>
+              <span class="spacer"></span>
+              <button class="small ghost" id="to-custom">Edit as text →</button>
+            </div>
+          </div>
+          <div id="custom" class="hidden">
+            <div class="row" style="margin-bottom:8px">
+              <span class="hint">Start from:</span>
+              <button class="small" data-tpl="array">result: [...]</button>
+              <button class="small" data-tpl="object">JSON object</button>
+              <button class="small" data-tpl="canonical">Canonical JSON</button>
+            </div>
+            <textarea id="template" spellcheck="false"></textarea>
+            <details style="margin-top:6px"><summary>Placeholders for auto values (replaced fresh in every message)</summary>
+              <table class="ph-table" style="margin-top:6px">
+                <tr><td class="mono">{{rand:MIN:MAX}}</td><td>random number (add :DECIMALS, e.g. {{rand:0:1:6}})</td></tr>
+                <tr><td class="mono">{{int:MIN:MAX}}</td><td>random integer</td></tr>
+                <tr><td class="mono">{{sine:MIN:MAX:PERIOD_S}}</td><td>smooth wave</td></tr>
+                <tr><td class="mono">{{counter}} {{counter:START:STEP}}</td><td>increasing counter</td></tr>
+                <tr><td class="mono">{{bool}} {{pick:RUN|IDLE|FAULT}}</td><td>true/false, one of the options</td></tr>
+                <tr><td class="mono">{{now}} {{seq}} {{device}} {{site}} {{line}}</td><td>time, message number, target</td></tr>
+              </table>
+              <p class="hint">Text without placeholders is sent exactly as typed.</p>
+            </details>
+          </div>
+          <h3 style="margin:14px 0 6px">Preview <span class="hint">(one sample message)</span></h3>
+          <div class="preview" id="preview"></div>
+          <div class="err" id="preview-err"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h2>3. Send</h2><span class="spacer"></span>
+          <div class="seg" id="send-seg"><button data-send="single" class="on">Single message</button><button data-send="bulk">Bulk</button></div>
+        </div>
+        <div class="card-b">
+          <div id="bulk-opts" class="grid hidden" style="margin-bottom:12px">
+            <label>Messages per device <input id="count" type="number" min="1" max="100000" value="60"></label>
+            <label>Every <select id="interval">
+              <option value="100">0.1 s</option><option value="250">0.25 s</option><option value="500">0.5 s</option>
+              <option value="1000" selected>1 s</option><option value="2000">2 s</option><option value="5000">5 s</option>
+              <option value="10000">10 s</option><option value="30000">30 s</option><option value="60000">1 min</option>
+            </select></label>
+            <label style="grid-column: span 2; align-content:end"><span class="row"><input type="checkbox" id="forever"> Keep sending until I press Stop</span><span class="hint">Stops automatically after 24 h</span></label>
+          </div>
+          <div class="row">
+            <button class="primary" id="send">Send message</button>
+            <span class="hint" id="send-summary"></span>
+          </div>
+          <div class="err" id="send-err" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <div class="card-h"><h2>Runs</h2></div>
+        <div id="jobs"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Simulated devices</h2><span class="hint" id="ttl-hint"></span><span class="spacer"></span>
+          <button class="small danger" id="remove-all">Remove all</button></div>
+        <div id="devices"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Sent messages</h2><span class="hint">latest first</span></div>
+        <div id="log"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) n.append(k.nodeType ? k : String(k));
+  return n;
+};
+
+async function api(path, method = "GET", body) {
+  const res = await fetch("/api" + path, {
+    method, credentials: "same-origin",
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    let msg = data && data.detail ? data.detail : res.status + " " + res.statusText;
+    if (Array.isArray(msg)) msg = msg.map((d) => (d.loc || []).filter((x) => x !== "body").join(".") + ": " + d.msg).join("; ");
+    const err = new Error(msg); err.status = res.status; throw err;
+  }
+  return data;
+}
+
+// ------------------------------------------------------------------ state
+const state = { mode: "builder", send: "single", me: null };
+const GENERATORS = {
+  rand: { label: "Random number", fields: ["min", "max", "dec"] },
+  int: { label: "Random integer", fields: ["min", "max"] },
+  sine: { label: "Smooth wave", fields: ["min", "max", "dec"] },
+  counter: { label: "Counter", fields: ["min"] },
+  fixed: { label: "Fixed value", fields: ["min"] },
+  bool: { label: "On / off", fields: [] },
+};
+let values = [
+  { name: "temperature", gen: "rand", min: 270, max: 280, dec: 6 },
+  { name: "pressure", gen: "rand", min: 135, max: 140, dec: 6 },
+  { name: "current", gen: "sine", min: 3.8, max: 4.5, dec: 6 },
+  { name: "speed", gen: "rand", min: 6, max: 6.3, dec: 6 },
+  { name: "vibration", gen: "rand", min: 2.9, max: 3.2, dec: 6 },
+];
+
+function placeholder(v) {
+  const dec = v.dec === "" || v.dec === undefined ? 2 : v.dec;
+  switch (v.gen) {
+    case "rand": return `{{rand:${v.min}:${v.max}:${dec}}}`;
+    case "int": return `{{int:${v.min}:${v.max}}}`;
+    case "sine": return `{{sine:${v.min}:${v.max}:60:${dec}}}`;
+    case "counter": return `{{counter:${v.min || 0}}}`;
+    case "bool": return "{{bool}}";
+    default: return String(v.min === "" ? 0 : v.min);
+  }
+}
+
+function buildTemplate(format = $("format").value) {
+  if (format === "array") return `${$("array-name").value || "result"}: [${values.map(placeholder).join(",")}]`;
+  const body = values.map((v) => `"${v.name}": ${placeholder(v)}`).join(", ");
+  if (format === "object") return `{${body}}`;
+  return `{"schema_version": 1, "device_id": "{{device}}", "ts": "{{now}}", "seq": {{seq}}, "status": "RUN", "tags": {${body}}}`;
+}
+
+function currentTemplate() { return state.mode === "builder" ? buildTemplate() : $("template").value; }
+
+function renderValues() {
+  const tbody = $("vals"); tbody.replaceChildren();
+  const isArray = $("format").value === "array";
+  $("array-name-wrap").classList.toggle("hidden", !isArray);
+  values.forEach((v, i) => {
+    const input = (key, type = "number", extra = {}) =>
+      el("input", { type, value: v[key] ?? "", step: "any", ...extra, oninput: (e) => { v[key] = type === "number" && e.target.value !== "" ? Number(e.target.value) : e.target.value; refresh(); } });
+    const f = GENERATORS[v.gen].fields;
+    tbody.append(el("tr", {},
+      el("td", {}, isArray ? el("span", { class: "hint" }, `${$("array-name").value || "result"}_${i + 1}`) : input("name", "text")),
+      el("td", {}, el("select", { onchange: (e) => { v.gen = e.target.value; renderValues(); refresh(); } },
+        Object.entries(GENERATORS).map(([k, g]) => el("option", { value: k, selected: k === v.gen }, g.label)))),
+      el("td", {}, f.includes("min") ? input("min") : ""),
+      el("td", {}, f.includes("max") ? input("max") : ""),
+      el("td", {}, f.includes("dec") ? input("dec", "number", { min: 0, max: 9 }) : ""),
+      el("td", {}, el("button", { class: "small ghost", title: "Remove", onclick: () => { values.splice(i, 1); renderValues(); refresh(); } }, "✕")),
+    ));
+  });
+}
+
+function deviceIds() {
+  const n = Math.max(1, Math.min(20, Number($("ndev").value) || 1));
+  const base = $("device").value;
+  return n === 1 ? [base] : Array.from({ length: n }, (_, i) => `${base}-${String(i + 1).padStart(2, "0")}`);
+}
+
+let previewTimer;
+function topicFor(device) {
+  return $("topic-tpl").value.trim()
+    .replace(/\{\{\s*site\s*\}\}/g, $("site").value)
+    .replace(/\{\{\s*line\s*\}\}/g, $("line").value)
+    .replace(/\{\{\s*device\s*\}\}/g, device);
+}
+
+const TOPIC_NOTES = {
+  sim: ["var(--good)", "Simulated device: shown with a “Simulated” badge on the dashboard and removed automatically when idle."],
+  plc: ["var(--critical)", "Acts exactly like a real PLC: the data is NOT marked as simulated and is NOT removed automatically. Use only to test the real pipeline."],
+  test: ["var(--offline)", "Not shown on the dashboard (the ingestor ignores test/). Useful for other MQTT subscribers."],
+};
+
+function refresh() {
+  const ids = deviceIds();
+  const first = topicFor(ids[0]);
+  $("topic").textContent = first + (ids.length > 1 ? `  (… ${topicFor(ids[ids.length - 1])})` : "");
+  const note = TOPIC_NOTES[first.split("/")[0]];
+  $("topic-note").replaceChildren(...(note ? [el("span", { class: "pill" }, el("span", { class: "dot", style: `background:${note[0]}` }), first.split("/")[0] + "/"), " ", note[1]] : [el("span", { class: "err" }, "Topic must start with sim/, plc/ or test/")]));
+  $("ndev-hint").textContent = ids.length === 1 ? "one device" : `${ids[0]} … ${ids[ids.length - 1]}`;
+  const bulk = state.send === "bulk";
+  $("bulk-opts").classList.toggle("hidden", !bulk);
+  $("count").disabled = $("forever").checked;
+  if (!bulk) {
+    $("send").textContent = ids.length === 1 ? "Send message" : `Send 1 message to ${ids.length} devices`;
+    $("send-summary").textContent = "";
+  } else {
+    const every = Number($("interval").value) / 1000;
+    const total = $("forever").checked ? "until stopped" : `${Number($("count").value) * ids.length} messages`;
+    $("send").textContent = "Start run";
+    $("send-summary").textContent = `${ids.length} device${ids.length > 1 ? "s" : ""} × every ${every} s · ${total}`;
+  }
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    try {
+      const { payload } = await api("/preview", "POST", { template: currentTemplate() });
+      $("preview").textContent = payload; $("preview-err").textContent = "";
+    } catch (e) { $("preview-err").textContent = e.message; }
+  }, 250);
+}
+
+// ------------------------------------------------------------------ actions
+async function send() {
+  $("send-err").textContent = "";
+  const bulk = state.send === "bulk";
+  const body = {
+    site: $("site").value, line: $("line").value, device_id: $("device").value,
+    devices: deviceIds().length, template: currentTemplate(), topic: $("topic-tpl").value,
+    count: bulk ? ($("forever").checked ? 0 : Number($("count").value)) : 1,
+    interval_ms: bulk ? Number($("interval").value) : 1000,
+  };
+  $("send").disabled = true;
+  try {
+    if (!bulk && body.devices > 1) {
+      // one message to each device: a short run with count = 1
+      await api("/send", "POST", { ...body, interval_ms: 1000 });
+    } else {
+      await api("/send", "POST", body);
+    }
+    await poll();
+  } catch (e) {
+    $("send-err").textContent = e.message;
+  } finally { $("send").disabled = false; }
+}
+
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString() : "—";
+const ago = (iso) => { if (!iso) return "never"; const s = (Date.now() - new Date(iso)) / 1000; return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`; };
+
+function renderJobs(list) {
+  const box = $("jobs"); box.replaceChildren();
+  if (!list.length) { box.append(el("div", { class: "empty" }, "No runs yet. Single messages are sent immediately; bulk sends appear here.")); return; }
+  box.append(el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Run"), el("th", {}, "Devices"), el("th", {}, "Progress"), el("th", {}, ""))),
+    el("tbody", {}, list.map((j) => {
+      const pct = j.total ? Math.round((100 * j.sent) / j.total) : null;
+      const color = j.status === "running" ? "var(--good)" : j.status === "error" ? "var(--critical)" : "var(--offline)";
+      return el("tr", {},
+        el("td", {}, el("span", { class: "pill" }, el("span", { class: "dot", style: `background:${color}` }), j.status), el("div", { class: "hint" }, `#${j.id} · ${fmtTime(j.started)} · every ${j.interval_ms / 1000}s`)),
+        el("td", { class: "mono" }, j.device_ids.length === 1 ? j.device_ids[0] : `${j.device_ids[0]} +${j.device_ids.length - 1}`, el("div", { class: "hint", style: "word-break:break-all" }, j.topics[0])),
+        el("td", {}, j.total ? `${j.sent} / ${j.total}` : `${j.sent} sent`, pct !== null ? el("div", { class: "bar" }, el("span", { style: `width:${pct}%` })) : null, j.error ? el("div", { class: "err" }, j.error) : null),
+        el("td", {}, j.status === "running" ? el("button", { class: "small", onclick: async () => { await api(`/jobs/${j.id}`, "DELETE"); poll(); } }, "Stop") : ""),
+      );
+    }))));
+}
+
+function renderDevices(list) {
+  const box = $("devices"); box.replaceChildren();
+  $("device-list").replaceChildren(...list.map((d) => el("option", { value: d.device_id })));
+  if (!list.length) { box.append(el("div", { class: "empty" }, "No simulated devices.")); return; }
+  const dash = state.me && state.me.dashboard_url;
+  box.append(el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Status"), el("th", {}, "Messages"), el("th", {}, ""))),
+    el("tbody", {}, list.map((d) => el("tr", {},
+      el("td", {}, dash ? el("a", { href: `${dash}/devices/${encodeURIComponent(d.device_id)}`, target: "_blank", rel: "noopener", class: "mono" }, d.device_id) : el("span", { class: "mono" }, d.device_id), el("div", { class: "hint" }, `${d.site}/${d.line}`)),
+      el("td", {}, el("span", { class: "pill" }, el("span", { class: "dot", style: `background:${d.running ? "var(--good)" : d.online ? "var(--accent)" : "var(--offline)"}` }), d.running ? "sending" : d.online ? "online" : "idle"), el("div", { class: "hint" }, `last ${ago(d.last_seen)}`)),
+      el("td", {}, d.msg_count),
+      el("td", {}, el("button", { class: "small ghost danger", onclick: async () => { if (confirm(`Remove ${d.device_id} and all its data from the dashboard?`)) { await api(`/devices/${encodeURIComponent(d.device_id)}`, "DELETE"); poll(); } } }, "Remove")),
+    )))));
+}
+
+function renderLog(list) {
+  const box = $("log"); box.replaceChildren();
+  if (!list.length) { box.append(el("div", { class: "empty" }, "Nothing sent yet.")); return; }
+  box.append(...list.slice(0, 25).map((m) => el("div", { class: "log-entry" },
+    el("div", { class: "hint" }, `${fmtTime(m.ts)} → `, el("span", { class: "mono" }, m.topic)),
+    el("code", { style: "white-space:pre-wrap;word-break:break-all" }, m.payload))));
+}
+
+async function poll() {
+  try {
+    const [jobs, devices, log, me] = await Promise.all([api("/jobs"), api("/devices"), api("/log"), api("/me")]);
+    state.me = me;
+    renderJobs(jobs); renderDevices(devices); renderLog(log);
+    const pill = $("broker-pill");
+    pill.firstElementChild.style.background = me.broker_connected ? "var(--good)" : "var(--critical)";
+    pill.lastElementChild.textContent = me.broker_connected ? "Broker connected" : "Broker disconnected";
+  } catch (e) { if (e.status === 401) toLogin(); }
+}
+
+// ------------------------------------------------------------------ wiring
+// Sign-in is shared with the dashboard: without a session, go to the dashboard's login page
+// and come back here afterwards.
+let DASHBOARD = "";
+function toLogin() {
+  location.replace(`${DASHBOARD}/login?next=${encodeURIComponent(location.href)}`);
+}
+function showGate(message, linkText, href) {
+  $("app").classList.add("hidden"); $("gate").classList.remove("hidden");
+  $("gate-msg").textContent = message;
+  $("gate-link").textContent = linkText; $("gate-link").href = href;
+}
+
+async function start() {
+  try { DASHBOARD = ((await api("/config")).dashboard_url || "").replace(/\/$/, ""); } catch {}
+  try { state.me = await api("/me"); }
+  catch (e) {
+    if (e.status === 403) return showGate("The simulator is a test tool for administrators. Your account does not have access.", "← Back to the dashboard", DASHBOARD || "/");
+    return toLogin();
+  }
+  $("gate").classList.add("hidden"); $("app").classList.remove("hidden");
+  $("who").textContent = `${state.me.email} (${state.me.role})`;
+  if (state.me.dashboard_url) $("dash-link").href = state.me.dashboard_url; else $("dash-link").classList.add("hidden");
+  $("ttl-hint").textContent = `removed automatically ${state.me.device_ttl_min} min after their last message`;
+  renderValues(); refresh(); poll();
+  setInterval(poll, 2000);
+}
+
+$("logout").onclick = async () => {
+  try { await api("/logout", "POST"); } finally { location.replace(`${DASHBOARD}/logged-out`); }
+};
+// A page restored from the back/forward cache after sign-out must re-check the session.
+window.addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
+["site", "line", "device", "ndev", "count", "interval", "forever", "template", "array-name", "topic-tpl"].forEach((id) => $(id).addEventListener("input", () => { if (id === "array-name") renderValues(); refresh(); }));
+$("format").onchange = () => { renderValues(); refresh(); };
+$("add-val").onclick = () => { values.push({ name: `value${values.length + 1}`, gen: "rand", min: 0, max: 100, dec: 2 }); renderValues(); refresh(); };
+$("to-custom").onclick = () => { $("template").value = buildTemplate(); setMode("custom"); };
+document.querySelectorAll("[data-tpl]").forEach((b) => b.onclick = () => { $("template").value = buildTemplate(b.dataset.tpl); refresh(); });
+function setMode(mode) {
+  state.mode = mode;
+  document.querySelectorAll("#mode-seg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  $("builder").classList.toggle("hidden", mode !== "builder"); $("custom").classList.toggle("hidden", mode !== "custom");
+  if (mode === "custom" && !$("template").value) $("template").value = "result: [275.500000,138.500000,4.170000,6.140000,3.050000]";
+  refresh();
+}
+document.querySelectorAll("#mode-seg button").forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+document.querySelectorAll("#send-seg button").forEach((b) => b.onclick = () => {
+  state.send = b.dataset.send;
+  document.querySelectorAll("#send-seg button").forEach((x) => x.classList.toggle("on", x === b)); refresh();
+});
+$("send").onclick = send;
+$("remove-all").onclick = async () => { if (confirm("Remove all simulated devices and their data from the dashboard?")) { await api("/devices", "DELETE"); poll(); } };
+start();
+</script>
+</body>
+</html>

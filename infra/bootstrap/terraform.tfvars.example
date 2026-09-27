@@ -1,0 +1,12 @@
+project_id = "plc-integrated-dashboard"
+
+# Each person logs in with their OWN Google account. Nobody shares the owner login.
+operators = [
+  "user:you@example.com",
+  # "user:colleague@example.com",
+  # "group:plc-platform@yourcompany.com",   # with Google Workspace, prefer groups
+]
+
+viewers = [
+  # "user:plant.manager@example.com",
+]

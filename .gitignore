@@ -1,0 +1,23 @@
+# secrets / local config
+.env
+.env.*
+!.env.example
+deploy/.env.demo
+
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# terraform
+infra/*/.terraform/
+infra/*/*.tfstate
+infra/*/*.tfstate.*
+infra/*/terraform.tfvars
+
+.DS_Store

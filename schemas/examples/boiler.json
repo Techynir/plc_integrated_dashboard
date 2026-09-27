@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "device_id": "plc-boiler-01",
+  "ts": "2026-09-26T10:15:30.500Z",
+  "seq": 88121,
+  "status": "RUN",
+  "tags": {
+    "steam_pressure_bar": 9.84,
+    "water_level_pct": 61.2,
+    "flue_gas_temp_c": 212.7,
+    "burner_on": true,
+    "feed_pump_running": true,
+    "fuel_flow_lph": 34.1
+  },
+  "quality": {
+    "flue_gas_temp_c": "UNCERTAIN"
+  }
+}
