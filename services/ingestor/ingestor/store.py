@@ -1,12 +1,13 @@
 """TimescaleDB access for the ingestor."""
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 
 import asyncpg
 
 from .alarms import Rule
-from .parsing import Reading, TagConfig, Topic
+from .parsing import Reading, RegisterDef, TagConfig, Topic
 
 
 @dataclass
@@ -53,10 +54,27 @@ class Store:
         return {r["device_id"]: DeviceState(**dict(r)) for r in rows}
 
     async def load_tag_configs(self) -> dict[tuple[str, str], TagConfig]:
-        rows = await self.pool.fetch("SELECT device_id, tag, data_type, value_scale, value_offset FROM tags")
+        rows = await self.pool.fetch(
+            "SELECT device_id, tag, data_type, value_scale, value_offset, value_labels, valid_min, valid_max FROM tags"
+        )
         return {
-            (r["device_id"], r["tag"]): TagConfig(r["data_type"], r["value_scale"], r["value_offset"]) for r in rows
+            (r["device_id"], r["tag"]): TagConfig(
+                r["data_type"], r["value_scale"], r["value_offset"],
+                json.loads(r["value_labels"]) if isinstance(r["value_labels"], str) else r["value_labels"],
+                r["valid_min"], r["valid_max"],
+            )
+            for r in rows
         }
+
+    async def load_register_maps(self) -> tuple[dict[str, dict[int, RegisterDef]], dict[str, str]]:
+        """Returns ({device: {address: RegisterDef}}, {device: status tag})."""
+        maps: dict[str, dict[int, RegisterDef]] = {}
+        status_tags: dict[str, str] = {}
+        for r in await self.pool.fetch("SELECT device_id, address, tag, data_type, is_status FROM register_map"):
+            maps.setdefault(r["device_id"], {})[r["address"]] = RegisterDef(r["address"], r["tag"], r["data_type"])
+            if r["is_status"]:
+                status_tags[r["device_id"]] = r["tag"]
+        return maps, status_tags
 
     async def load_rules(self) -> list[Rule]:
         rows = await self.pool.fetch(

@@ -25,6 +25,6 @@ def test_role_hierarchy():
 
 
 def test_token_carries_millisecond_issue_time():
-    now = dt.datetime(2026, 9, 27, 10, 0, 0, 750000, tzinfo=dt.timezone.utc)
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=750000)  # must not be expired
     claims = decode_token(issue_token(1, "viewer", now=now))
     assert claims["iat_ms"] == int(now.timestamp() * 1000) and claims["iat"] == int(now.timestamp())

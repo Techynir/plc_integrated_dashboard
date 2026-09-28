@@ -1,7 +1,14 @@
 import type { Tag, TagValue } from "./api";
 
-export function formatValue(value: TagValue | undefined, tag?: Pick<Tag, "data_type" | "decimals">): string {
+export function formatValue(
+  value: TagValue | undefined,
+  tag?: Pick<Tag, "data_type" | "decimals"> & { value_labels?: Record<string, string> | null },
+): string {
   if (value === null || value === undefined) return "—";
+  if (tag?.value_labels && typeof value === "number") {
+    const label = tag.value_labels[String(value)];
+    if (label !== undefined) return label; // e.g. 1 -> "Running"
+  }
   if (typeof value === "boolean") return value ? "ON" : "OFF";
   if (typeof value === "string") return value;
   if (tag?.data_type === "boolean") return value ? "ON" : "OFF";

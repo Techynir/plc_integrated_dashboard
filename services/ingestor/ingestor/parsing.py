@@ -46,6 +46,8 @@ class Reading:
     value_text: str | None
     quality: int
     integral: bool = False  # sent as a JSON integer (counters, codes): shown without decimals
+    block: int | None = None  # Modbus gateway: index of the register block (one read) it came from
+    rejected: bool = False  # bad read: kept as text for audit, excluded from values/charts/alarms
 
     @property
     def display_value(self) -> float | bool | str | None:
@@ -64,7 +66,7 @@ class Telemetry:
     seq: int | None
     status: str | None
     readings: list[Reading]
-    format: str = "canonical"  # canonical | simple (see decode_simple)
+    format: str = "canonical"  # canonical | modbus | simple (see decode_modbus / decode_simple)
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,28 @@ class TagConfig:
     data_type: str = "number"
     value_scale: float = 1.0
     value_offset: float = 0.0
+    value_labels: dict | None = None  # e.g. {"0": "Stopped", "1": "Running"}
+    valid_min: float | None = None
+    valid_max: float | None = None
+
+
+# Device status derived from a labelled status register (first match wins).
+_STATUS_WORDS = [
+    ("fault", "FAULT"), ("error", "FAULT"), ("alarm", "FAULT"), ("trip", "FAULT"),
+    ("maint", "MAINT"), ("idle", "IDLE"), ("standby", "IDLE"), ("ready", "IDLE"),
+    ("stop", "STOP"), ("halt", "STOP"), ("off", "STOP"), ("run", "RUN"), ("on", "RUN"),
+]
+
+
+def status_from_label(label: str | None) -> str | None:
+    """'Running' -> RUN, 'Stopped' -> STOP, 'E-Stop fault' -> FAULT; None if nothing matches."""
+    if not label:
+        return None
+    words = re.findall(r"[a-z]+", label.lower())
+    for keyword, status in _STATUS_WORDS:
+        if any(w.startswith(keyword) for w in words):
+            return status
+    return None
 
 
 def parse_topic(topic: str) -> Topic | None:
@@ -189,12 +213,89 @@ def decode_simple(topic: Topic, doc, received_at: dt.datetime) -> Telemetry:
     return Telemetry(topic.device_id, ts, from_device, None, None, readings, format="simple")
 
 
+# ---------------------------------------------------------------- Modbus register gateways
+
+# Registers occupied by one value of each type (a Modbus holding register is 16 bits).
+REGISTER_WIDTH = {"int16": 1, "uint16": 1, "bool": 1, "int32": 2, "uint32": 2, "float32": 2, "float64": 4}
+
+
+@dataclass(frozen=True)
+class RegisterDef:
+    address: int  # e.g. 400002
+    tag: str
+    data_type: str  # key of REGISTER_WIDTH
+
+
+def is_modbus_blocks(doc) -> bool:
+    """Gateway format: {"<NAME>": [{"full_addr": "400002", "data": "[276.0, ...]", ...}, ...]}"""
+    if not isinstance(doc, dict) or len(doc) != 1:
+        return False
+    blocks = next(iter(doc.values()))
+    return (
+        isinstance(blocks, list)
+        and len(blocks) > 0
+        and all(isinstance(b, dict) and "full_addr" in b and "data" in b for b in blocks)
+    )
+
+
+def _block_values(raw) -> list:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw, parse_constant=_reject_constant)
+        except json.JSONDecodeError as exc:
+            raise InvalidMessage(f"register data {raw[:60]!r} is not a list of numbers") from exc
+    values = raw if isinstance(raw, list) else [raw]
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+        raise InvalidMessage("register data must contain numbers only")
+    return values
+
+
+def decode_modbus(
+    topic: Topic, doc: dict, received_at: dt.datetime, register_map: dict[int, RegisterDef] | None
+) -> Telemetry:
+    """Each block starts at full_addr; its values fill consecutive registers. A value's width comes
+    from the register map (float32 = 2 registers, int16 = 1, ...). Unmapped values become reg_<address>
+    and are assumed to be one register wide."""
+    register_map = register_map or {}
+    readings: list[Reading] = []
+    for block_index, block in enumerate(next(iter(doc.values()))):
+        try:
+            address = int(str(block["full_addr"]).strip())
+        except ValueError as exc:
+            raise InvalidMessage(f"full_addr {block['full_addr']!r} is not a register address") from exc
+        for value in _block_values(block["data"]):
+            reg = register_map.get(address)
+            if reg is None:
+                readings.append(replace(_reading(f"reg_{address}", value), block=block_index))
+                address += 1
+                continue
+            reading = replace(_reading(reg.tag, value), block=block_index)
+            if reg.data_type == "bool":
+                reading = replace(reading, data_type="boolean", value_num=1.0 if value else 0.0)
+            elif reg.data_type in ("int16", "uint16", "int32", "uint32"):
+                reading = replace(reading, integral=True)
+            readings.append(reading)
+            address += REGISTER_WIDTH.get(reg.data_type, 1)
+        if len(readings) > MAX_TAGS:
+            raise InvalidMessage(f"more than {MAX_TAGS} values in one message")
+    if not readings:
+        raise InvalidMessage("message contains no register values")
+    return Telemetry(topic.device_id, received_at, False, None, None, readings, format="modbus")
+
+
 def decode_telemetry(
-    topic: Topic, payload: bytes, received_at: dt.datetime, validator: Draft202012Validator
+    topic: Topic,
+    payload: bytes,
+    received_at: dt.datetime,
+    validator: Draft202012Validator,
+    register_map: dict[int, RegisterDef] | None = None,
 ) -> Telemetry:
     """Canonical v1 messages (with schema_version) are validated strictly against the JSON Schema;
-    anything else goes through the lenient ``decode_simple``."""
+    Modbus gateway blocks are decoded with the device's register map; anything else goes through
+    the lenient ``decode_simple``."""
     doc = _load_payload(payload)
+    if is_modbus_blocks(doc):
+        return decode_modbus(topic, doc, received_at, register_map)
     if not (isinstance(doc, dict) and "schema_version" in doc):
         return decode_simple(topic, doc, received_at)
 
@@ -226,6 +327,39 @@ def apply_tag_config(reading: Reading, cfg: TagConfig | None) -> Reading:
         text = "" if reading.value_num is None else f"{reading.value_num:g}"
         return replace(reading, data_type="string", value_text=text)
     return reading
+
+
+def reject_bad_reads(readings: list[Reading], cfg_for) -> tuple[list[Reading], list[str]]:
+    """Mark readings outside their valid range, or status codes without a label, as rejected.
+    One bad value rejects its whole Modbus block, because a block is a single read and a partly
+    garbage read cannot be trusted. Returns (readings, reasons)."""
+    reasons: list[str] = []
+    bad_blocks: set[int] = set()
+    flags = []
+    for r in readings:
+        cfg = cfg_for(r.tag)
+        v = r.value_num
+        bad = False
+        if cfg is not None and v is not None and r.data_type != "string":
+            if cfg.valid_min is not None and v < cfg.valid_min:
+                bad = True
+                reasons.append(f"{r.tag}={v:g} below valid minimum {cfg.valid_min:g}")
+            elif cfg.valid_max is not None and v > cfg.valid_max:
+                bad = True
+                reasons.append(f"{r.tag}={v:g} above valid maximum {cfg.valid_max:g}")
+            elif cfg.value_labels and f"{v:g}" not in cfg.value_labels:
+                bad = True
+                reasons.append(f"{r.tag}={v:g} is not a known code ({', '.join(cfg.value_labels)})")
+        if bad and r.block is not None:
+            bad_blocks.add(r.block)
+        flags.append(bad)
+    out = []
+    for r, bad in zip(readings, flags):
+        if bad or (r.block is not None and r.block in bad_blocks):
+            text = r.value_text if r.value_num is None else f"{r.value_num:g}"
+            r = replace(r, value_num=None, value_text=text, quality=QUALITY_BAD, rejected=True)
+        out.append(r)
+    return out, reasons
 
 
 def decode_status(payload: bytes) -> bool | None:

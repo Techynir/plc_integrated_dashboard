@@ -74,6 +74,7 @@ export interface TrendChartProps {
   decimals: number;
   group: string;
   label: string;
+  valueLabels?: Record<string, string> | null;  // e.g. {"0": "Stopped", "1": "Running"}: step chart with named levels
 }
 
 export function TrendChart(props: TrendChartProps) {
@@ -97,12 +98,19 @@ export function TrendChart(props: TrendChartProps) {
   useEffect(() => {
     const c = chart.current;
     if (!c) return;
-    const { points, from, to, bucketS, expectedIntervalS, dataType, unit, decimals, group, label } = props;
-    const isBool = dataType === "boolean";
+    const { points, from, to, bucketS, expectedIntervalS, dataType, unit, decimals, group, label, valueLabels } = props;
+    const levels = valueLabels ? Object.keys(valueLabels).map(Number).filter((n) => !Number.isNaN(n)).sort((a, b) => a - b) : [];
+    const isLevels = levels.length > 0;
+    const isBool = dataType === "boolean" || isLevels;
+    const lo = isLevels ? levels[0] : 0;
+    const hi = isLevels ? levels[levels.length - 1] : 1;
     const data = withGaps(points, bucketS * 1000, expectedIntervalS * 1000);
     const showBand = !isBool && bucketS > 1;
-    const fmt = (v: number) =>
-      isBool ? (v >= 0.5 ? "ON" : "OFF") : v.toLocaleString(undefined, { maximumFractionDigits: decimals });
+    const fmt = (v: number) => {
+      if (isLevels) return valueLabels![String(Math.round(v))] ?? v.toLocaleString();
+      if (isBool) return v >= 0.5 ? "ON" : "OFF";
+      return v.toLocaleString(undefined, { maximumFractionDigits: decimals });
+    };
 
     c.group = group;
     echarts.connect(group);
@@ -122,13 +130,15 @@ export function TrendChart(props: TrendChartProps) {
         yAxis: {
           type: "value",
           scale: !isBool,
-          min: isBool ? -0.1 : undefined,
-          max: isBool ? 1.1 : undefined,
-          interval: isBool ? 1 : undefined,
+          min: isBool ? lo - 0.1 : undefined,
+          max: isBool ? hi + 0.1 : undefined,
           splitNumber: 4,
+          // Step charts: put labels/ticks exactly on the levels (0 = Stopped, 1 = Running, ...).
+          axisTick: isBool ? { customValues: isLevels ? levels : [0, 1] } : undefined,
           axisLabel: {
             color: tokens.muted,
-            formatter: (v: number) => (isBool ? (v === 1 ? "ON" : v === 0 ? "OFF" : "") : fmt(v)),
+            formatter: (v: number) => fmt(v),
+            ...(isBool ? { customValues: isLevels ? levels : [0, 1] } : {}),
           },
           splitLine: { lineStyle: { color: tokens.grid, width: 1 } },
         },

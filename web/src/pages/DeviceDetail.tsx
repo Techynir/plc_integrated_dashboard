@@ -9,6 +9,7 @@ import { mergeLive } from "./Overview";
 import { TrendChart } from "../components/TrendChart";
 import { ErrorText, Loading, Modal, SeverityBadge, SimulatedBadge, StatusBadge, useNow } from "../components/ui";
 import { AlarmTable } from "./Alarms";
+import { RegisterMapEditor } from "../components/RegisterMap";
 import type { Alarm } from "../api";
 
 const PRESETS = [
@@ -254,6 +255,7 @@ function Trends({ device, tags }: { device: Device; tags: Tag[] }) {
                   decimals={tag.decimals}
                   group={`trends-${device.device_id}`}
                   label={tag.display_name}
+                  valueLabels={tag.value_labels}
                 />
               )}
             </div>
@@ -410,6 +412,8 @@ export function DeviceDetail() {
           </table>
         </div>
       </div>
+
+      {can("admin") && !d.simulated && <RegisterMapEditor deviceId={d.device_id} />}
 
       <div className="card section">
         <div className="card-header">

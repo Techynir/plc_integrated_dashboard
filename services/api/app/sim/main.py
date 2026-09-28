@@ -69,7 +69,10 @@ class Publisher:
                     self.ready.set()
                     backoff = 1.0
                     log.info("connected to broker")
-                    await asyncio.Future()  # hold the connection open
+                    # Nothing is subscribed, but iterating the message stream is what raises
+                    # MqttError when the broker drops the connection, so we notice and reconnect.
+                    async for _ in client.messages:
+                        pass
             except aiomqtt.MqttError as exc:
                 log.warning("broker connection error: %s (retry in %.0fs)", exc, backoff)
             finally:
@@ -83,7 +86,11 @@ class Publisher:
             await asyncio.wait_for(self.ready.wait(), 5)
         except asyncio.TimeoutError as exc:
             raise HTTPException(503, "Simulator is not connected to the broker") from exc
-        await self.client.publish(topic, payload, qos=1)
+        try:
+            await self.client.publish(topic, payload, qos=1)
+        except (aiomqtt.MqttError, AttributeError) as exc:  # AttributeError: client dropped meanwhile
+            self.ready.clear()
+            raise HTTPException(503, "Lost the broker connection; reconnecting — try again in a few seconds") from exc
 
 
 publisher = Publisher()

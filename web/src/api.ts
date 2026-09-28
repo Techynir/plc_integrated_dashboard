@@ -26,6 +26,7 @@ export interface Tag {
   decimals: number;
   pinned: boolean;
   configured: boolean;
+  value_labels?: Record<string, string> | null;
   value: TagValue;
   quality: Quality | null;
   ts: string | null;

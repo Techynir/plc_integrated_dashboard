@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import db
-from .. import mqtt_accounts
+from .. import mqtt_accounts, register_map
 from ..config import settings
 from ..deps import CurrentUser, admin, viewer
 from ..history import query_history
@@ -32,7 +32,7 @@ DEVICE_COLUMNS = """
 
 TAG_COLUMNS = """
     t.device_id, t.tag, t.display_name, t.unit, t.data_type, t.value_scale, t.value_offset,
-    t.min_value, t.max_value, t.decimals, t.pinned, t.configured,
+    t.min_value, t.max_value, t.decimals, t.pinned, t.configured, t.value_labels, t.valid_min, t.valid_max,
     l.ts, l.value_num, l.value_text, l.quality
 """
 
@@ -68,6 +68,8 @@ class TagUpdate(BaseModel):
     max_value: float | None = None
     decimals: int | None = Field(default=None, ge=0, le=6)
     pinned: bool | None = None
+    valid_min: float | None = None
+    valid_max: float | None = None
 
 
 # ---------------------------------------------------------------- helpers
@@ -98,6 +100,9 @@ def tag_dict(row) -> dict:
         "decimals": row["decimals"],
         "pinned": row["pinned"],
         "configured": row["configured"],
+        "value_labels": row["value_labels"],
+        "valid_min": row["valid_min"],
+        "valid_max": row["valid_max"],
         "value": tag_value(row),
         "quality": QUALITY.get(row["quality"]) if row["quality"] is not None else None,
         "ts": row["ts"].isoformat() if row["ts"] else None,
@@ -177,7 +182,8 @@ async def list_devices(_: CurrentUser = Depends(viewer)) -> list[dict]:
     )
     tags = await db.pool().fetch(
         f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) "
-        "ORDER BY t.device_id, t.pinned DESC, t.tag"
+        "LEFT JOIN register_map rm USING (device_id, tag) "
+        "ORDER BY t.device_id, t.pinned DESC, rm.address NULLS LAST, t.tag"
     )
     by_device: dict[str, list[dict]] = {}
     for row in tags:
@@ -189,7 +195,7 @@ async def list_devices(_: CurrentUser = Depends(viewer)) -> list[dict]:
         all_tags = by_device.get(d["device_id"], [])
         pinned = [t for t in all_tags if t["pinned"]]
         d["tag_count"] = len(all_tags)
-        d["preview_tags"] = (pinned or [t for t in all_tags if t["data_type"] != "string"])[:4]
+        d["preview_tags"] = (pinned or [t for t in all_tags if t["data_type"] != "string"])[:6]
         result.append(d)
     return result
 
@@ -230,7 +236,8 @@ async def get_device(device_id: str, _: CurrentUser = Depends(viewer)) -> dict:
     d = device_dict(await get_device_row(device_id))
     rows = await db.pool().fetch(
         f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) "
-        "WHERE t.device_id = $1 ORDER BY t.pinned DESC, t.tag",
+        "LEFT JOIN register_map rm USING (device_id, tag) "
+        "WHERE t.device_id = $1 ORDER BY t.pinned DESC, rm.address NULLS LAST, t.tag",
         device_id,
     )
     d["tags"] = [tag_dict(r) for r in rows]
@@ -329,6 +336,94 @@ async def delete_tag(device_id: str, tag: str, user: CurrentUser = Depends(admin
         await conn.execute("DELETE FROM tags WHERE device_id = $1 AND tag = $2", device_id, tag)
     await notify_config_changed()
     await db.audit(user.email, "tag.delete", f"{device_id}/{tag}")
+
+
+# ---------------------------------------------------------------- Modbus register map
+
+
+class RegisterIn(BaseModel):
+    address: int = Field(gt=0, le=499999)
+    tag: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    data_type: Literal["int16", "uint16", "int32", "uint32", "float32", "float64", "bool"]
+    value_labels: dict[str, str] | None = None
+    is_status: bool = False
+    unit: str = Field(default="", max_length=32)
+    display_name: str = Field(default="", max_length=120)
+    valid_min: float | None = None
+    valid_max: float | None = None
+
+
+class RegisterMapIn(BaseModel):
+    registers: list[RegisterIn] = Field(max_length=500)
+
+
+class MappingText(BaseModel):
+    text: str = Field(max_length=20000)
+
+
+@router.get("/{device_id}/register-map")
+async def get_register_map(device_id: str, _: CurrentUser = Depends(viewer)) -> list[dict]:
+    rows = await db.pool().fetch(
+        """
+        SELECT r.address, r.tag, r.data_type, r.is_status, t.value_labels, t.valid_min, t.valid_max,
+               coalesce(t.unit, '') AS unit, coalesce(t.display_name, '') AS display_name
+        FROM register_map r LEFT JOIN tags t USING (device_id, tag)
+        WHERE r.device_id = $1 ORDER BY r.address
+        """,
+        device_id,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.post("/{device_id}/register-map/parse")
+async def parse_register_map(device_id: str, body: MappingText, _: CurrentUser = Depends(admin)) -> dict:
+    """Preview: turn a pasted mapping list into registers (nothing is saved)."""
+    return register_map.parse_mapping(body.text).as_dict()
+
+
+@router.put("/{device_id}/register-map")
+async def put_register_map(device_id: str, body: RegisterMapIn, user: CurrentUser = Depends(admin)) -> list[dict]:
+    await get_device_row(device_id)
+    regs = sorted(body.registers, key=lambda r: r.address)
+    check = register_map.ParseResult(registers=[
+        register_map.Register(r.address, r.tag, r.data_type) for r in regs
+    ])
+    register_map.check_layout(check)
+    if check.errors:
+        raise HTTPException(400, "; ".join(check.errors))
+    for r in regs:
+        if r.valid_min is not None and r.valid_max is not None and r.valid_min > r.valid_max:
+            raise HTTPException(400, f"{r.tag}: valid minimum is above valid maximum")
+    if sum(r.is_status for r in regs) > 1:
+        raise HTTPException(400, "Only one register can drive the device status")
+
+    async with db.pool().acquire() as conn, conn.transaction():
+        await conn.execute("DELETE FROM register_map WHERE device_id = $1", device_id)
+        for r in regs:
+            await conn.execute(
+                "INSERT INTO register_map (device_id, address, tag, data_type, is_status) VALUES ($1, $2, $3, $4, $5)",
+                device_id, r.address, r.tag, r.data_type, r.is_status,
+            )
+            integer = r.data_type in ("int16", "uint16", "int32", "uint32")
+            await conn.execute(
+                """
+                INSERT INTO tags (device_id, tag, data_type, decimals, value_labels, unit, display_name,
+                                  valid_min, valid_max, configured)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+                ON CONFLICT (device_id, tag) DO UPDATE SET
+                    data_type = EXCLUDED.data_type, value_labels = EXCLUDED.value_labels,
+                    valid_min = EXCLUDED.valid_min, valid_max = EXCLUDED.valid_max,
+                    decimals = CASE WHEN tags.configured THEN tags.decimals ELSE EXCLUDED.decimals END,
+                    unit = CASE WHEN EXCLUDED.unit <> '' THEN EXCLUDED.unit ELSE tags.unit END,
+                    display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE tags.display_name END,
+                    configured = true
+                """,
+                device_id, r.tag, "boolean" if r.data_type == "bool" else "number", 0 if integer else 2,
+                r.value_labels, r.unit, r.display_name, r.valid_min, r.valid_max,
+            )
+        await conn.execute("NOTIFY config_changed")
+    await db.audit(user.email, "device.register_map", device_id, {"registers": len(regs)})
+    return await get_register_map(device_id, user)
 
 
 @router.get("/{device_id}/history")

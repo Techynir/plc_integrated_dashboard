@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+from dataclasses import replace
 import json
 import logging
 import os
@@ -24,6 +25,8 @@ from .parsing import (
     decode_telemetry,
     load_validator,
     parse_topic,
+    reject_bad_reads,
+    status_from_label,
 )
 from .store import DeviceState, DeviceUpdate, Store
 
@@ -76,6 +79,8 @@ class Ingestor:
         self.seq = SeqTracker()
         self.devices: dict[str, DeviceState] = {}
         self.tag_cfg: dict[tuple[str, str], TagConfig] = {}
+        self.register_maps: dict[str, dict] = {}  # device -> {address: RegisterDef}
+        self.status_tags: dict[str, str] = {}  # device -> tag whose label drives the status
         self.config_changed = asyncio.Event()
         self.http = httpx.AsyncClient(timeout=5)
         self._background: set[asyncio.Task] = set()
@@ -124,6 +129,7 @@ class Ingestor:
             del self.devices[device_id]
             self.seq.reset(device_id)
         self.tag_cfg = await self.store.load_tag_configs()
+        self.register_maps, self.status_tags = await self.store.load_register_maps()
         self.engine.load(await self.store.load_rules(), await self.store.load_active_alarms())
 
     async def config_loop(self) -> None:
@@ -205,7 +211,9 @@ class Ingestor:
             self.raw.append((received_at, topic.device_id, topic_str, text, status, detail[:500]))
 
         try:
-            msg = decode_telemetry(topic, payload, received_at, self.validator)
+            msg = decode_telemetry(
+                topic, payload, received_at, self.validator, self.register_maps.get(topic.device_id)
+            )
         except InvalidMessage as exc:
             self.stats["invalid"] += 1
             log.info("rejected message on %s: %s", topic_str, exc)
@@ -243,8 +251,16 @@ class Ingestor:
                 self.tag_cfg[(msg.device_id, r.tag)] = TagConfig(data_type=r.data_type)
 
         readings = [apply_tag_config(r, self.tag_cfg.get((msg.device_id, r.tag))) for r in msg.readings]
+        readings, bad_reasons = reject_bad_reads(readings, lambda tag: self.tag_cfg.get((msg.device_id, tag)))
+        if bad_reasons:
+            self.stats["bad_reads"] = self.stats.get("bad_reads", 0) + 1
+        msg = self.derive_status(msg, readings)
         self.buffer(msg, readings, received_at, gap)
-        keep_raw("ok", f"{msg.format} format → " + ", ".join(f"{r.tag}={_short(r.display_value)}" for r in readings))
+        good = [r for r in readings if not r.rejected]
+        detail = f"{msg.format} format → " + (", ".join(f"{r.tag}={_short(r.display_value)}" for r in good) or "no valid values")
+        if bad_reasons:
+            detail += f" | bad read rejected: {'; '.join(bad_reasons)}"
+        keep_raw("ok", detail)
 
         was_offline = not dev.online
         dev.online, dev.last_seen = True, received_at
@@ -258,7 +274,7 @@ class Ingestor:
                 "ts": msg.ts.isoformat(),
                 "seq": msg.seq,
                 "status": dev.status,
-                "values": {r.tag: {"v": r.display_value, "q": r.quality} for r in readings},
+                "values": {r.tag: {"v": r.display_value, "q": r.quality} for r in readings if not r.rejected},
             },
         )
         transitions = self.engine.on_readings(msg.device_id, readings, msg.status)
@@ -271,9 +287,24 @@ class Ingestor:
         if len(self.rows) >= FLUSH_MAX_ROWS:
             await self.flush()
 
+    def derive_status(self, msg: Telemetry, readings: list) -> Telemetry:
+        """A labelled status register (e.g. 0=Stopped, 1=Running) sets RUN/STOP/FAULT/..."""
+        tag = self.status_tags.get(msg.device_id)
+        if msg.status or not tag:
+            return msg
+        reading = next((r for r in readings if r.tag == tag and r.value_num is not None and not r.rejected), None)
+        cfg = self.tag_cfg.get((msg.device_id, tag))
+        if reading is None or cfg is None or not cfg.value_labels:
+            return msg
+        label = cfg.value_labels.get(f"{reading.value_num:g}")
+        status = status_from_label(label)
+        return replace(msg, status=status) if status else msg
+
     def buffer(self, msg: Telemetry, readings: list, received_at: dt.datetime, gap: int) -> None:
         for r in readings:
             self.rows.append((msg.ts, msg.device_id, r.tag, r.value_num, r.value_text, r.quality))
+            if r.rejected:
+                continue  # a bad read never replaces the last good value
             key = (msg.device_id, r.tag)
             prev = self.latest.get(key)
             if prev is None or prev[0] <= msg.ts:

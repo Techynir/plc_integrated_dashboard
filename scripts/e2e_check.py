@@ -150,6 +150,53 @@ async def main() -> None:
         check(any(m["status"] == "rejected" for m in raw) and any(m["status"] == "duplicate" for m in raw),
               "raw view includes rejected and duplicate messages")
 
+        # Modbus gateway payloads (PM3032) decoded through a register map
+        mapping = ("Machine_Status - 400001 - 16Bit Integer 0=Stopped, 1=Running\n"
+                   "Machine_Speed - 400002 - 32 Bit Real - 275.5\n"
+                   "Main_Motor_Current - 400004 - 32 Bit Real - 138.5\n"
+                   "Dryer_Steam_Pressure - 400006 - 32 Bit Real - 4.17\n"
+                   "Paper_Moisture - 400008 - 32 Bit Real - 6.14\n"
+                   "Main_Bearing_Vibration - 4000010 - 32 Bit Real - 3.05")
+        parsed = (await http.post(f"/api/v1/devices/{DEVICE}/register-map/parse", json={"text": mapping})).json()
+        check(not parsed["errors"] and len(parsed["registers"]) == 6 and parsed["registers"][5]["address"] == 400010,
+              "register mapping list parsed (4000010 read as 400010)")
+        for reg in parsed["registers"]:
+            if reg["data_type"] == "float32":
+                reg["valid_min"], reg["valid_max"] = 0, 5000
+        r = await http.put(f"/api/v1/devices/{DEVICE}/register-map", json={"registers": parsed["registers"]})
+        check(r.status_code == 200, "register map saved")
+        await asyncio.sleep(1)
+        gw_status = '{"PM3032_DATA":[{"server_id":1,"addr":1,"full_addr":"400001","size":3,"data":"[%d]","ip":"192.168.18.2","name":"D2"}]}'
+        gw_values = ('{"PM3032_DATA":[{"server_id":1,"addr":2,"full_addr":"400002","size":50,'
+                     '"data":"[276.000000,138.500000,4.170000,6.140000,3.050000]","ip":"192.168.18.2","name":"D1"}]}')
+        await publish(password, [(topic, gw_status % 1), (topic, gw_values)])
+        await asyncio.sleep(1.5)
+        dev = (await http.get(f"/api/v1/devices/{DEVICE}")).json()
+        vals = {t["tag"]: t["value"] for t in dev["tags"]}
+        check(vals.get("Machine_Speed") == 276.0 and vals.get("Main_Bearing_Vibration") == 3.05
+              and vals.get("Machine_Status") == 1, "gateway registers stored under mapped names")
+        check(dev["status"] == "RUN", f"Machine_Status 1 -> device status RUN ({dev['status']})")
+        labels = next(t["value_labels"] for t in dev["tags"] if t["tag"] == "Machine_Status")
+        check(labels == {"0": "Stopped", "1": "Running"}, "status labels available to the dashboard")
+        await publish(password, [(topic, gw_status % 0)])
+        await asyncio.sleep(1.5)
+        check((await http.get(f"/api/v1/devices/{DEVICE}")).json()["status"] == "STOP", "Machine_Status 0 -> STOP")
+        raw = (await http.get("/api/v1/raw-messages", params={"device_id": DEVICE, "limit": 1})).json()[0]
+        check(raw["detail"].startswith("modbus format"), "raw view shows the modbus decoding")
+
+        # garbage reads (as sent by the real gateway while the PLC restarted) must not replace good values
+        garbage = ('{"PM3032_DATA":[{"server_id":1,"addr":2,"full_addr":"400002","size":129,"data":"[-44298551296.000000,'
+                   '-28848127533489853006564714317254492160.000000,-103276347031795907145600746913792.000000,-0.000000,0.000000]",'
+                   '"ip":"192.168.18.2","name":"D1"}]}')
+        await publish(password, [(topic, gw_status.replace("[%d]", "[-19157]")), (topic, garbage)])
+        await asyncio.sleep(1.5)
+        dev = (await http.get(f"/api/v1/devices/{DEVICE}")).json()
+        vals = {t["tag"]: t["value"] for t in dev["tags"]}
+        check(vals["Machine_Speed"] == 276.0 and vals["Paper_Moisture"] == 6.14 and vals["Machine_Status"] == 0
+              and dev["status"] == "STOP", "bad reads rejected; last good values kept")
+        raw = (await http.get("/api/v1/raw-messages", params={"device_id": DEVICE, "limit": 2})).json()
+        check(all("bad read rejected" in m["detail"] for m in raw), "raw view explains the rejected bad reads")
+
         r = await http.get("/api/v1/system/ingest-errors")
         check(any(e["device_id"] == DEVICE for e in r.json()), "invalid payload recorded in ingest_errors")
 
