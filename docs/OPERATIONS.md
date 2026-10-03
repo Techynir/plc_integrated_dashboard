@@ -211,6 +211,33 @@ How it behaves:
 * **Removal:** a simulated device is removed with all its data when you click **Remove** or **Remove all**, and automatically `SIM_DEVICE_TTL_MIN` minutes after its last message.
 * **Real PLCs are protected:** the simulator cannot publish for a real PLC's device ID, and a real device cannot be created with a simulated device's ID.
 
+## 6a. Demo history for PM-01
+
+`python -m ingestor.history` fills a window (default: the last 7 days) for a real device with data that is stored exactly as if the PLC had sent it. It runs the program from *PM-01 Demo Data: Simple PLC Guide* (Step 5) once per simulated second and builds the gateway's real messages: `{"PM3032_DATA":[...]}`, D1 = 400002–400011 and D2 = 400001, on the device's `plc/<site>/<line>/<device>/telemetry` topic, delivered in 5-second bursts. Every message then goes through the live ingestor's own handler with a simulated clock. Decoding, bad-read rejection, status, raw data, alarms (delays, suppression while stopped) and offline detection all behave as in production.
+
+What the week contains:
+
+| Scenario | Source |
+|---|---|
+| Sensor noise, linked values (current and vibration follow speed; moisture follows steam about a minute later) | Guide, Steps 1–2 |
+| 8–9 stops a day: status 0, speed ramps down and up at 3 m/min per second | Guide, Step 3 |
+| 4–5 problem events a day each for speed, steam (and so moisture), motor current and vibration; about 1 in 5 reaches the critical value | Guide, Step 4 |
+| Bearing wear: vibration baseline rises 0.03 mm/s a day | Generator only (gives Asset health a trend) |
+| Communication lost: 2–4 short drops a day (some longer than the 60 s offline alarm), one ~35 min gateway reboot, one ~2 h network failure | Generator only (gateway / network) |
+| Bad reads: negative current, garbage speed float, unknown status code (65535), `nan` in the data | Generator only (gateway) |
+
+Run it with the live ingestor stopped. On the VM, prefix each command with `sudo`.
+
+```bash
+docker compose exec -T db pg_dump -U plc -Fc plc > backup.dump        # always back up first
+docker compose stop ingestor
+docker compose run --rm --no-deps -e HISTORY_CONFIRM=1 ingestor \
+  python -m ingestor.history conveyer-plc-line-01 --days 7 --replace   # --dry-run to preview
+docker compose start ingestor
+```
+
+`--replace` deletes the device's stored values, raw messages, alarms, stop reasons and ingest errors inside the window first. The same `--seed` (default 12345, the guide's start number) always gives the same week. A run takes about 3 minutes on a laptop. Raw messages older than 7 days are removed by the normal retention, so the Raw data tab's history shortens day by day.
+
 ## 7. API
 
 * Interactive docs: `https://<ip>.sslip.io/api/docs`. Log in to the dashboard in the same browser first; "Try it out" then uses your session.

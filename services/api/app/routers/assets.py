@@ -428,6 +428,13 @@ async def compute_health(asset: dict, end: dt.datetime | None) -> dict:
     dev = asset["device_id"]
     _, stop, anchored = window(asset, 1, end)
     vib, cur, spd, steam = (role_tag(asset, r) for r in ("vibration", "motor_current", "speed", "steam_pressure"))
+    if end is None:
+        # Score the most recent running minute in the last 12 h, so a short comms drop or a stop
+        # does not blank the score; anchored says the minute is not the current one.
+        recent, _, _ = await machine_segments(asset, stop - 12 * 3600, stop)
+        last_run = next((s for s in reversed(recent) if s.state == "run" and s.seconds >= 60), None)
+        if last_run is not None and last_run.end < stop - 1:
+            stop, anchored = last_run.end, True
     segs, _, _ = await machine_segments(asset, stop - 60, stop)
 
     def last_mean(s, running=True):
