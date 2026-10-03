@@ -216,7 +216,6 @@ export function Layout({ children }: { children: ReactNode }) {
         <nav className="navgrp" aria-label="Operations">
           <h4>Operations</h4>
           {link("/", "Plant overview")}
-          {link("/live", "Live view")}
           {link("/trends", "Trends & historian")}
           {link(
             "/alarms",

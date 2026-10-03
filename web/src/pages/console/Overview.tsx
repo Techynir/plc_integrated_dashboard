@@ -1,15 +1,16 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { api, Device, SystemStats } from "../../api";
+import { useQueries } from "@tanstack/react-query";
+import { api, Device } from "../../api";
 import { Summary, useHistory, windowEnd } from "../../assetApi";
 import { useAuth } from "../../auth";
 import { mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
-import { useIngestorStats, useLiveDevice } from "../../live";
+import { useLiveDevice } from "../../live";
 import { formatAge, formatValue, secondsSince } from "../../format";
 import { Chip, fmtDur, fmtNum, fmtPct, ScreenHead, Tile } from "../../components/console";
 import { Sparkline } from "../../components/charts";
 import { Loading, useNow } from "../../components/ui";
+import { Live } from "./Live";
 
 const HEALTH = { good: ["ok", "Good"], watch: ["warn", "Watch"], act: ["crit", "Act"], nodata: ["bad", "No data"] } as const;
 
@@ -72,7 +73,7 @@ function AssetCard({ d, s }: { d: Device; s: Summary | undefined }) {
   };
 
   return (
-    <Link className="asset" to={`/live?asset=${encodeURIComponent(d.device_id)}`}>
+    <Link className="asset" to={`/?asset=${encodeURIComponent(d.device_id)}`}>
       <div className="ah">
         <div>
           <h3>
@@ -126,81 +127,9 @@ function AssetCard({ d, s }: { d: Device; s: Summary | undefined }) {
   );
 }
 
-const PIPE_KEY = "plc-pipeline-open";
-
-function Pipeline({ asset }: { asset: Device | undefined }) {
-  const [open, setOpen] = useState(() => {
-    try {
-      return localStorage.getItem(PIPE_KEY) !== "0";
-    } catch {
-      return true;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(PIPE_KEY, open ? "1" : "0");
-    } catch {
-      /* storage unavailable */
-    }
-  }, [open]);
-  const stats = useQuery({ queryKey: ["system"], queryFn: () => api<SystemStats>("/system/stats"), refetchInterval: 10_000 });
-  const ing = useIngestorStats() ?? stats.data?.ingestor ?? null;
-  const l = useLiveDevice(asset?.device_id);
-  const now = useNow(2000);
-  const s = stats.data;
-  const m = asset ? mergeLive(asset, l) : null;
-  const down = !m?.online;
-  const cfg = asset?.asset_config ?? {};
-  const ingFresh = ing ? now - new Date(ing.ts).getTime() < 30_000 : false;
-  const node = (title: string, l1: string, l2: string, bad: boolean) => (
-    <div className={`pnode${bad ? " down" : ""}`}>
-      <span className="pt">
-        <i />
-        {title}
-      </span>
-      <span className="pl">{l1}</span>
-      <span className="pl">{l2}</span>
-    </div>
-  );
-  const link = (label: string, value: string, bad: boolean) => (
-    <div className={`plink${bad ? " down" : ""}`}>
-      <span>{label}</span>
-      <div className="ln" />
-      <span>{bad ? "no data" : value}</span>
-    </div>
-  );
-  return (
-    <details className="panel" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-      <summary>
-        <div className="phead">
-          <h2>Data pipeline{asset ? ` · ${asset.name || asset.device_id}` : ""}</h2>
-          <span className="sub">Each hop reports its own health. A break shows as a break, never as a zero value.</span>
-        </div>
-      </summary>
-      <div className="pipe">
-        {node("PLC", [cfg.plc_ip, cfg.unit_id != null ? `Unit ${cfg.unit_id}` : null].filter(Boolean).join(" · ") || "IP not recorded", cfg.block_read || "register map", down)}
-        {link(cfg.protocol || "Modbus", m?.lastSeen ? formatAge(secondsSince(m.lastSeen, now)) : "—", down)}
-        {node("Gateway", cfg.gateway || "PLC gateway", m?.lastSeen ? `last ${formatAge(secondsSince(m.lastSeen, now))}` : "no data yet", down)}
-        {link("MQTT/TLS", "connected", down)}
-        {node("MQTT broker", s ? (s.broker.connected ? `${s.broker.clients_connected ?? "?"} clients` : "disconnected") : "…", "Mosquitto", !!s && !s.broker.connected)}
-        {link("subscribe", ing ? `${fmtNum(ing.msg_rate, 1)} msg/s` : "—", !ingFresh)}
-        {node("Ingestor + historian", s ? `${Intl.NumberFormat(undefined, { notation: "compact" }).format(s.telemetry_rows)} rows` : "…", ing ? `flush ${Math.round(ing.last_flush_ms)} ms` : "no heartbeat", !ingFresh)}
-        {link("WebSocket", "live", false)}
-        {node("Web dashboard", `${s?.websocket_clients ?? "?"} viewers`, "This screen", false)}
-      </div>
-      {down && asset?.last_seen && (
-        <p className="note" style={{ marginTop: 10 }}>
-          The server side is healthy; this PLC has not sent data for {formatAge(secondsSince(asset.last_seen, now)).replace(" ago", "")}. Check the gateway power/network or its MQTT
-          settings.
-        </p>
-      )}
-    </details>
-  );
-}
-
 export function Overview() {
   const { asset, assets, loading } = useAsset();
-  const { can } = useAuth();
+  const cards = assets.filter((d) => !d.simulated);
   const summaries = useQueries({
     queries: assets.map((d) => ({
       queryKey: ["asset", d.device_id, "summary", 24],
@@ -239,18 +168,14 @@ export function Overview() {
         <Tile k="Data completeness · 24 h" v={fmtPct(completeness, 2)} unit="%" s={`${fmtDur(comms)} with no PLC link`} />
         <Tile k="Records stored · 24 h" v={records.toLocaleString("en-IN")} s={`1 record every ${interval} s`} />
       </div>
-      <div className="assets">
-        {assets.map((d) => (
-          <AssetCard key={d.device_id} d={d} s={bySum.get(d.device_id)} />
-        ))}
-        {can("admin") && (
-        <Link className="asset template" to="/admin/devices">
-          <h3 style={{ color: "var(--ink-2)" }}>Add an asset</h3>
-          <div className="meta">Register the PLC, give the programmer its MQTT details, then map registers, set limits and go live in Asset configuration.</div>
-        </Link>
-        )}
-      </div>
-      <Pipeline asset={asset} />
+      {cards.length > 0 && (
+        <div className="assets">
+          {cards.map((d) => (
+            <AssetCard key={d.device_id} d={d} s={bySum.get(d.device_id)} />
+          ))}
+        </div>
+      )}
+      {asset && <Live embedded />}
     </div>
   );
 }

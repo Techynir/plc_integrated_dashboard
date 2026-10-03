@@ -43,38 +43,7 @@ export function lanesFor(
   }));
 }
 
-function RawRecord({ deviceId }: { deviceId: string }) {
-  const { can } = useAuth();
-  const raw = useQuery({
-    queryKey: ["raw", deviceId, "latest"],
-    queryFn: () => api<{ ts: string; topic: string; payload: string }[]>(`/raw-messages${qs({ device_id: deviceId, status: "ok", limit: 1 })}`),
-    refetchInterval: 5000,
-  });
-  const r = raw.data?.[0];
-  let pretty = r?.payload ?? "";
-  try {
-    pretty = JSON.stringify(JSON.parse(pretty), null, 2);
-  } catch {
-    /* show as received */
-  }
-  return (
-    <Panel
-      title="Latest stored record"
-      sub={r ? `Exactly what the gateway sent · ${fmtDT(r.ts)}` : "none in the last 7 days"}
-      actions={
-        can("admin") && (
-          <Link className="btn small" to={`/raw?device=${encodeURIComponent(deviceId)}`}>
-            All raw data
-          </Link>
-        )
-      }
-    >
-      {r ? <pre className="jsonbox" style={{ maxHeight: 260, margin: 0 }}>{pretty}</pre> : <div className="empty">No record received recently.</div>}
-    </Panel>
-  );
-}
-
-export function Live() {
+export function Live({ embedded = false }: { embedded?: boolean }) {
   const { asset, loading } = useAsset();
   const { can } = useAuth();
   const id = asset?.device_id;
@@ -128,11 +97,13 @@ export function Live() {
 
   return (
     <div className="screen">
-      <ScreenHead
-        eyebrow={`${d.asset_type || "Asset"} · ${d.name || d.device_id}`}
-        title="Live view"
-        desc="Values from the PLC as they arrive. Grey means normal. Colour appears only when something needs attention."
-      />
+      {!embedded && (
+        <ScreenHead
+          eyebrow={`${d.asset_type || "Asset"} · ${d.name || d.device_id}`}
+          title="Live view"
+          desc="Values from the PLC as they arrive. Grey means normal. Colour appears only when something needs attention."
+        />
+      )}
       <div className={`banner${state === "stopped" ? " stopped" : state === "comms" || state === "awaiting" ? " comms" : hasCrit ? " alarm" : " running"}`} role="status" aria-live="polite">
         <div className="state">
           <i />
@@ -222,51 +193,18 @@ export function Live() {
         })}
       </div>
 
-      <div className="grid g-7-5">
-        <Panel title="Last 15 minutes" sub="Shaded band = normal range · dashed = warning / critical">
-          {tags.length === 0 ? (
-            <div className="empty">No numeric tags yet.</div>
-          ) : (
-            <Lanes
-              lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`))}
-              from={end - span}
-              to={end}
-              gapMs={Math.max(15, d.asset_config?.comms_timeout_s ?? 15) * 1000}
-            />
-          )}
-        </Panel>
-        <div className="grid" style={{ alignContent: "start" }}>
-          <Panel
-            title={`Active alarms · ${d.name || d.device_id}`}
-            actions={
-              <Link className="sub" to={`/alarms?asset=${encodeURIComponent(d.device_id)}`}>
-                Open alarm list
-              </Link>
-            }
-          >
-            {activeAlarms.length ? (
-              <div className="alarmlist">
-                {activeAlarms.slice(0, 5).map((a) => (
-                  <div className="check" key={a.id}>
-                    <Chip cls={a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : "info"}>
-                      {a.severity === "critical" ? "Critical" : a.severity === "warning" ? "Warning" : "Info"}
-                    </Chip>
-                    <div>
-                      <b>{a.message || a.rule_name}</b> <span className="muted mono">since {fmtT(a.raised_at)}</span>
-                      {a.context && <div className="ctx">{a.context}</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted" style={{ margin: 0 }}>
-                No active alarms.
-              </p>
-            )}
-          </Panel>
-          <RawRecord deviceId={d.device_id} />
-        </div>
-      </div>
+      <Panel title="Last 15 minutes" sub="Shaded band = normal range · dashed = warning / critical">
+        {tags.length === 0 ? (
+          <div className="empty">No numeric tags yet.</div>
+        ) : (
+          <Lanes
+            lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`))}
+            from={end - span}
+            to={end}
+            gapMs={Math.max(15, d.asset_config?.comms_timeout_s ?? 15) * 1000}
+          />
+        )}
+      </Panel>
     </div>
   );
 }
