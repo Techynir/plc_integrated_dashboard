@@ -99,7 +99,7 @@ To deploy a new version, run `./scripts/deploy.sh` from the laptop, never by edi
 ./scripts/tunnel.sh     # keep it running; it prints the connection details (passwords from Secret Manager)
 ```
 
-Then use DBeaver/pgAdmin on `localhost:15432` and MQTT Explorer/MQTTX on `localhost:11883`, as described below.
+Then use DBeaver/pgAdmin on `127.0.0.1:15432` and MQTT Explorer/MQTTX on `127.0.0.1:11883`, as described below.
 
 ## 4. Database (TimescaleDB / PostgreSQL)
 
@@ -115,20 +115,22 @@ sudo docker compose exec db psql -U plc -d plc
    ```bash
    gcloud compute ssh plc-dashboard --zone asia-south1-a --tunnel-through-iap -- -N -L 15432:localhost:5432
    ```
-2. Connect the tool to: host `localhost`, port `15432`, database `plc`, user `plc`, password = secret `plc-db-password`. SSL is not needed; the tunnel is already encrypted.
+2. Connect the tool to: host `127.0.0.1` (not `localhost`, which macOS may resolve to IPv6), port `15432`, database `plc`, user `plc`, password = secret `plc-db-password`. SSL is not needed; the tunnel is already encrypted.
 
 ### Tables worth knowing
 
 | Table / view | Contents |
 |---|---|
 | `devices` | One row per PLC: status, online, last_seen, message counts |
-| `tags` | Per device and tag config: display name, unit, scale/offset, pinned |
+| `tags` | Per device and tag config: display name, unit, scale/offset, normal range, warning/critical limits, analytics role, operator guidance |
 | `tag_latest` | Latest value of every tag |
 | `telemetry` | Every value (hypertable; raw data kept 30 days, compressed after 1 day) |
 | `telemetry_1m`, `telemetry_1h` | 1-minute (1 year) and 1-hour (5 years) rollups |
-| `raw_messages` | Every MQTT message exactly as received, with result (3 days) |
+| `raw_messages` | Every MQTT message exactly as received, with result (7 days) |
 | `ingest_errors` | Rejected messages with the reason (7 days) |
-| `alarm_rules`, `alarms` | Alarm configuration and history |
+| `alarm_rules`, `alarms` | Alarm configuration and history. Rules with `managed_by = 'limit:…'` come from tag limits; change them in Asset configuration |
+| `stoppage_reasons` | Reason chosen for each machine stop (Performance & downtime) |
+| `commissioning_items` | Commissioning checklist per asset (Data quality & link) |
 | `users`, `audit_log` | Dashboard users and who did what |
 
 ```sql
@@ -148,6 +150,8 @@ SELECT pg_size_pretty(pg_database_size('plc'));
 
 **Be careful with writes.** Change configuration through the dashboard: it also updates the broker and the ingestor, and records an audit entry. Direct `UPDATE`s to `devices`, `tags` or `alarm_rules` are picked up by the ingestor only within 60 seconds.
 
+**Copy GCP data to your local stack:** `./scripts/sync-from-gcp.sh` (from the laptop). It replaces the local database with a copy of the GCP one; the previous local data is saved in `backups/`. GCP is the source of truth, and local is a snapshot.
+
 **Manual backup** (in addition to the automatic daily disk snapshots):
 ```bash
 sudo docker compose exec -T db pg_dump -U plc -Fc plc > plc-$(date +%F).dump    # on the VM
@@ -162,7 +166,7 @@ gcloud compute scp plc-dashboard:/opt/plc-dashboard/plc-*.dump . --zone asia-sou
    ```bash
    gcloud compute ssh plc-dashboard --zone asia-south1-a --tunnel-through-iap -- -N -L 11883:localhost:1883
    ```
-2. Connect the tool to: host `localhost`, port `11883`, no TLS, username `admin`, password = secret `plc-mqtt-admin-password`.
+2. Connect the tool to: host `127.0.0.1`, port `11883`, no TLS, username `admin`, password = secret `plc-mqtt-admin-password`.
 3. Subscribe to:
    * `plc/#`: everything the PLCs send (raw)
    * `app/#`: what the ingestor publishes after processing (`app/live/...`, `app/alarms`, `app/stats`)

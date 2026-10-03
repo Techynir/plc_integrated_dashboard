@@ -1,5 +1,12 @@
-"""Alarm rule evaluation. Pure state machine; persistence lives in store.py."""
+"""Alarm rule evaluation. Pure state machine; persistence lives in store.py.
 
+On/off delays: a condition must hold for on_delay_s before the alarm is raised and be gone
+for off_delay_s before it clears, so a value hovering at a limit does not chatter.
+Suppression: rules with suppress_when_stopped are held off while the machine is not running
+and for RESTART_GRACE_S after it restarts (process values are meaningless during a stop).
+"""
+
+import time
 from dataclasses import dataclass
 
 from .parsing import QUALITY_BAD, Reading
@@ -11,12 +18,16 @@ class Rule:
     name: str
     device_id: str | None  # None = all devices
     tag: str | None
-    rule_type: str  # high | low | equals | fault | offline
+    rule_type: str  # high | low | equals | fault | offline | stopped
     threshold: float | None
     deadband: float
     severity: str
     message: str
     webhook_url: str | None
+    on_delay_s: float = 0.0
+    off_delay_s: float = 0.0
+    suppress_when_stopped: bool = False
+    guidance: str = ""  # likely cause / what to check, shown with the alarm
 
     def applies_to(self, device_id: str) -> bool:
         return self.device_id is None or self.device_id == device_id
@@ -43,8 +54,13 @@ def decide(rule: Rule, value, active: bool) -> str | None:
             return "raise"
         if active and value >= th + db:
             return "clear"
-    elif rule.rule_type in ("equals", "fault"):
-        matched = value == "FAULT" if rule.rule_type == "fault" else abs(value - th) < 1e-9
+    elif rule.rule_type in ("equals", "fault", "stopped"):
+        if rule.rule_type == "fault":
+            matched = value == "FAULT"
+        elif rule.rule_type == "stopped":
+            matched = value == "STOP"
+        else:
+            matched = abs(value - th) < 1e-9
         if matched and not active:
             return "raise"
         if not matched and active:
@@ -79,29 +95,59 @@ def format_message(rule: Rule, device_id: str, value) -> str:
         "low": f"{device_id} {rule.tag} low: {_fmt(value)} < {th}",
         "equals": f"{device_id} {rule.tag} = {_fmt(value)}",
         "fault": f"{device_id} reported FAULT",
+        "stopped": f"{device_id} machine stopped",
         "offline": f"{device_id} offline for more than {th}s",
     }[rule.rule_type]
+
+
+RESTART_GRACE_S = 90.0
 
 
 class AlarmEngine:
     def __init__(self) -> None:
         self.rules: list[Rule] = []
         self.active: dict[tuple[int, str], int] = {}  # (rule_id, device_id) -> alarm id
+        self.pending: dict[tuple[int, str], tuple[str, float]] = {}  # key -> (action, since)
 
     def load(self, rules: list[Rule], active: dict[tuple[int, str], int]) -> None:
         self.rules = rules
         self.active = dict(active)
+        self.pending = {k: v for k, v in self.pending.items() if any(r.id == k[0] for r in rules)}
+
+    def _gate(self, rule: Rule, device_id: str, action: str | None, now: float) -> str | None:
+        """Apply on/off delays: only pass an action once it has persisted long enough."""
+        key = (rule.id, device_id)
+        if action is None:
+            self.pending.pop(key, None)
+            return None
+        delay = rule.on_delay_s if action == "raise" else rule.off_delay_s
+        current = self.pending.get(key)
+        if current is None or current[0] != action:
+            current = self.pending[key] = (action, now)
+        if now - current[1] >= delay:
+            self.pending.pop(key, None)
+            return action
+        return None
 
     def is_active(self, rule_id: int, device_id: str) -> bool:
         return (rule_id, device_id) in self.active
 
-    def on_readings(self, device_id: str, readings: list[Reading], status: str | None) -> list[Transition]:
+    def on_readings(
+        self,
+        device_id: str,
+        readings: list[Reading],
+        status: str | None,
+        now: float | None = None,
+        inhibited: bool = False,
+    ) -> list[Transition]:
+        """inhibited: the machine is stopped or restarted less than RESTART_GRACE_S ago."""
+        now = time.monotonic() if now is None else now
         by_tag = {r.tag: r for r in readings}
         out = []
         for rule in self.rules:
             if not rule.applies_to(device_id):
                 continue
-            if rule.rule_type == "fault":
+            if rule.rule_type in ("fault", "stopped"):
                 if status is None:
                     continue
                 value = status
@@ -112,7 +158,12 @@ class AlarmEngine:
                 value = reading.value_num
             else:
                 continue
-            action = decide(rule, value, self.is_active(rule.id, device_id))
+            active = self.is_active(rule.id, device_id)
+            if rule.suppress_when_stopped and inhibited:
+                action = "clear" if active else None  # held off while stopped / just restarted
+            else:
+                action = decide(rule, value, active)
+            action = self._gate(rule, device_id, action, now)
             if action:
                 # trigger_value is numeric; a FAULT status is described by the message instead.
                 numeric = isinstance(value, (int, float)) and action == "raise"

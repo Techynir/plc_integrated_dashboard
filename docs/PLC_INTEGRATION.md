@@ -88,7 +88,7 @@ If the PLC program cannot build the JSON above, it may send a plain list of valu
 
 With these formats the server's receive time is used as the timestamp, and duplicates cannot be detected (there is no `seq`). **Keep the order of the values fixed**: `result_3` always means "the third value". The admin gives each position a readable name and unit in the dashboard (device page → All tags → Configure).
 
-Every message, accepted or rejected, is visible exactly as received on the device page under **Raw data from PLC** (kept 3 days). This is the quickest way to check what the PLC is actually sending.
+Every message, accepted or rejected, is visible exactly as received on the device page under **Raw data from PLC** (kept 7 days). This is the quickest way to check what the PLC is actually sending.
 
 ## 4. Testing without the PLC
 

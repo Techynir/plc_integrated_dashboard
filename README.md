@@ -14,7 +14,7 @@ PLC ──MQTT/TLS :8883──▶ Mosquitto ──▶ ingestor ──▶ Timesca
 | **ingestor** (Python) | Validates messages against [`schemas/telemetry.v1.json`](schemas/telemetry.v1.json), applies tag scaling, writes to TimescaleDB in batches, publishes live events, and evaluates alarm rules. |
 | **TimescaleDB** | Stores raw values (30 days, compressed) plus 1-minute rollups (1 year) and 1-hour rollups (5 years). |
 | **api** (FastAPI) | REST and WebSocket API: login and roles, devices and credentials, history, CSV export, alarms, users, and audit log. |
-| **web** (React + ECharts) | Overview, device detail with trends, alarms, system health, and admin pages. Served by Caddy with automatic HTTPS. |
+| **web** (React + ECharts) | Asset console. **Operations:** plant overview, live view, trends & historian, alarms & events. **Analytics:** performance & downtime, process quality (SPC), asset health. **Platform:** data quality & link, asset configuration, raw data, system health. Plus admin pages. Served by Caddy with automatic HTTPS. |
 | **Logs** | Every container's output goes to Google Cloud Logging on GCP (`deploy/compose.gcp.yml`) and is searchable by admins under **Admin → Logs**. |
 | **Web simulator** | Admin-only test site (`sim.<host>`): send custom or auto-generated messages, single or bulk, to a topic of your choice under `sim/`, `plc/` or `test/`. |
 
@@ -22,6 +22,7 @@ Documents:
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): requirements and architecture.
 - [docs/PLC_INTEGRATION.md](docs/PLC_INTEGRATION.md): guide for the PLC programmer.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): how to reach every component on GCP (VM, database, broker, logs, backups).
+- [docs/OPEN_POINTS.md](docs/OPEN_POINTS.md): decisions parked for later.
 
 ## Run locally
 
@@ -35,9 +36,11 @@ docker compose up -d --build
 - Dashboard: http://localhost:8080. Log in as `admin@example.com` / `admin12345` (set in `.env`).
 - MQTT: `localhost:1883` for internal/dev use, and `localhost:8883` over TLS.
 - Web simulator: http://localhost:8081 (admin login).
+- Database: host `127.0.0.1` (not `localhost`: it is published on IPv4 only), port `5432`, database/user `plc`, password `plc-dev-password`.
+- **Make local data match GCP:** run `./scripts/sync-from-gcp.sh`. It copies the GCP database (devices, register maps, history, rules, users) into the local stack, after backing up the local data to `backups/`. GCP stays the source of truth: the real PLC sends only there, so rerun the script to refresh.
 - For load tests there is also a command-line simulator, [simulator/simulate.py](simulator/simulate.py), which connects like a real PLC.
 
-Run the end-to-end check (24 checks covering ingestion, ACLs, history, alarms, the WebSocket, and roles):
+Run the end-to-end check (covers ingestion, ACLs, history, alarms, the WebSocket, roles, the simulator, tag limits → alarm rules, and the asset analytics endpoints):
 
 ```bash
 docker compose exec -T api python - < scripts/e2e_check.py
@@ -50,7 +53,7 @@ cd services/ingestor && python -m venv .venv && .venv/bin/pip install -r require
 cd services/api      && python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/pytest
 ```
 
-To develop the frontend, keep the stack running and use `cd web && npm install && npm run dev` (Node 18+). Vite proxies `/api` to `localhost:8080`.
+To develop the frontend, keep the stack running and use `cd web && npm install && npm run dev` (Node 18+, see `web/.nvmrc`). Vite proxies `/api` to `localhost:8080`. If your machine has an older Node (e.g. 16), use `npm run dev:node20` / `npm run build:node20`: they fetch Node 20 into the npm cache for this project only. If `npm run build` reports a missing `@rollup/rollup-<platform>` module, delete `web/node_modules` and run `npm install` again.
 
 ## Deploy to GCP (demo)
 
@@ -113,8 +116,12 @@ cd /opt/plc-dashboard && sudo docker compose logs -f ingestor
 
 1. **Admin → Devices → Add device.** Choose the device ID, site, and line. The dialog shows the password once, along with every connection detail. Use **Copy all details for the PLC programmer**.
 2. Give the programmer [docs/PLC_INTEGRATION.md](docs/PLC_INTEGRATION.md) and the CA certificate (**Download CA certificate**).
-3. When data arrives, go to the device page and **Configure** each tag: display name, unit, scaling, pinned KPIs, and expected range.
-4. Add alarm rules under **Admin → Alarm rules**.
+3. When data arrives, open **Asset configuration** for the asset (pick it in the top bar):
+   - map the Modbus registers (**Register map**),
+   - in **Tag mapping & limits**, give each tag a name, unit, normal range and warning/critical limits, and assign the **roles** the analytics use: machine status, speed, motor current, steam pressure, moisture, vibration. Limits become alarm rules automatically (3 s on/off delay, held while the machine is stopped unless you untick it). Guidance text is shown to the operator with the alarm.
+   - fill in **Connection** and **Analytics settings**: where running time comes from (`auto` = status register unless it contradicts speed), the comms timeout (default 15 s; gateways that send in bursts need more than the burst period), and an optional speed target.
+4. Work through the **Commissioning checklist** on **Data quality & link**, including the float byte order (the raw register table shows what each value would read as in other orders).
+5. Extra alarm rules (e.g. offline, fault, machine stopped) go under **Admin → Alarm rules**.
 
 ## Repository layout
 

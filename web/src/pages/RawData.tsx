@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, qs } from "../api";
-import { useDevices } from "./Overview";
+import { useDevices } from "../hooks";
 import { ErrorText, Loading } from "../components/ui";
 
 type RawStatus = "ok" | "rejected" | "duplicate" | "ignored";
@@ -60,7 +60,7 @@ export function RawData() {
       <div className="page-header">
         <div>
           <h1>Raw data</h1>
-          <div className="sub">Messages exactly as received from the PLCs over MQTT, newest first · kept 3 days</div>
+          <div className="sub">Messages exactly as received from the PLCs over MQTT, newest first · kept 7 days</div>
         </div>
         <button className={live ? "primary" : ""} onClick={() => setLive((l) => !l)}>
           {live ? "Live ● pause" : "Paused ▶ resume"}
@@ -102,7 +102,7 @@ export function RawData() {
       <div className="card">
         <ErrorText error={raw.error} />
         {raw.isLoading && <Loading />}
-        {raw.data && rows.length === 0 && <div className="empty">No messages match these filters in the last 3 days.</div>}
+        {raw.data && rows.length === 0 && <div className="empty">No messages match these filters in the last 7 days.</div>}
         {rows.length > 0 && (
           <div className="table-wrap">
             <table>
@@ -124,7 +124,7 @@ export function RawData() {
                       </td>
                       {!device && (
                         <td className="small nowrap" style={{ verticalAlign: "top" }}>
-                          <Link to={`/devices/${encodeURIComponent(m.device_id)}`}>{m.device_id}</Link>
+                          <Link to={`/live?asset=${encodeURIComponent(m.device_id)}`}>{m.device_id}</Link>
                         </td>
                       )}
                       <td style={{ verticalAlign: "top", maxWidth: 560 }}>

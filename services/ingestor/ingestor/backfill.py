@@ -1,4 +1,4 @@
-"""Re-decode stored raw messages (last 3 days) for one device with its current register map
+"""Re-decode stored raw messages (last 7 days) for one device with its current register map
 and tag configuration. Use after setting up or changing a register map:
 
     docker compose exec ingestor python -m ingestor.backfill conveyer-plc-line-01 [--replace]

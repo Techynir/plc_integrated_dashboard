@@ -4,8 +4,8 @@
 #   ./scripts/tunnel.sh          # keep this terminal open; Ctrl+C closes the tunnels
 #
 # Then connect your tools to:
-#   PostgreSQL (DBeaver/pgAdmin):  localhost:15432   db=plc  user=plc    password=DB_PASSWORD
-#   MQTT (MQTT Explorer/MQTTX):    localhost:11883   no TLS  user=admin  password=MQTT_ADMIN_PASSWORD
+#   PostgreSQL (DBeaver/pgAdmin):  127.0.0.1:15432   db=plc  user=plc    password=DB_PASSWORD
+#   MQTT (MQTT Explorer/MQTTX):    127.0.0.1:11883   no TLS  user=admin  password=MQTT_ADMIN_PASSWORD
 # (passwords come from GCP Secret Manager: plc-db-password, plc-mqtt-admin-password)
 set -euo pipefail
 
@@ -32,8 +32,8 @@ env_value() {
 cat <<INFO
 Opening tunnels to $INSTANCE (Ctrl+C to close)...
 
-  PostgreSQL  host=localhost port=15432 database=plc user=plc password=$(env_value DB_PASSWORD)
-  MQTT        host=localhost port=11883 (no TLS) user=admin password=$(env_value MQTT_ADMIN_PASSWORD)
+  PostgreSQL  host=127.0.0.1 port=15432 database=plc user=plc password=$(env_value DB_PASSWORD)
+  MQTT        host=127.0.0.1 port=11883 (no TLS) user=admin password=$(env_value MQTT_ADMIN_PASSWORD)
               subscribe to  plc/#  (raw PLC traffic)  and  app/#  (processed)
 
 INFO

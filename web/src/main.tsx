@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "./api";
 import { AuthProvider, useAuth, useAuthConfig, useMe } from "./auth";
@@ -9,15 +9,28 @@ import { Layout } from "./components/Layout";
 import { Loading } from "./components/ui";
 import { Login } from "./pages/Login";
 import { LoggedOut } from "./pages/LoggedOut";
-import { Overview } from "./pages/Overview";
-import { DeviceDetail } from "./pages/DeviceDetail";
-import { Alarms } from "./pages/Alarms";
+import { Overview } from "./pages/console/Overview";
+import { Live } from "./pages/console/Live";
+import { Trends } from "./pages/console/Trends";
+import { Alarms } from "./pages/console/Alarms";
+import { Performance } from "./pages/console/Performance";
+import { Quality } from "./pages/console/Quality";
+import { Health } from "./pages/console/Health";
+import { DataQuality } from "./pages/console/DataQuality";
+import { Config } from "./pages/console/Config";
 import { System } from "./pages/System";
 import { RawData } from "./pages/RawData";
 import { AdminDevices } from "./pages/admin/Devices";
 import { AdminRules } from "./pages/admin/Rules";
 import { AdminAudit, AdminUsers } from "./pages/admin/Users";
 import { AdminLogs } from "./pages/admin/Logs";
+import "@fontsource/barlow/400.css";
+import "@fontsource/barlow/500.css";
+import "@fontsource/barlow/600.css";
+import "@fontsource/barlow-condensed/500.css";
+import "@fontsource/barlow-condensed/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./theme.css";
 
 const queryClient = new QueryClient({
@@ -36,6 +49,12 @@ queryClient.getQueryCache().subscribe((event) => {
     queryClient.setQueryData(["me"], null);
   }
 });
+
+/** Old device links (/devices/:id) open the asset's live view. */
+function DeviceRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/live?asset=${encodeURIComponent(id ?? "")}`} replace />;
+}
 
 function AdminOnly({ children }: { children: JSX.Element }) {
   return useAuth().can("admin") ? children : <Navigate to="/" replace />;
@@ -59,10 +78,17 @@ function Authenticated() {
     <Layout>
       <Routes>
         <Route path="/" element={<Overview />} />
-        <Route path="/devices/:id" element={<DeviceDetail />} />
+        <Route path="/live" element={<Live />} />
+        <Route path="/trends" element={<Trends />} />
         <Route path="/alarms" element={<Alarms />} />
-        <Route path="/raw" element={<RawData />} />
-        <Route path="/system" element={<System />} />
+        <Route path="/performance" element={<Performance />} />
+        <Route path="/quality" element={<Quality />} />
+        <Route path="/health" element={<Health />} />
+        <Route path="/data-quality" element={<AdminOnly><DataQuality /></AdminOnly>} />
+        <Route path="/config" element={<AdminOnly><Config /></AdminOnly>} />
+        <Route path="/devices/:id" element={<DeviceRedirect />} />
+        <Route path="/raw" element={<AdminOnly><RawData /></AdminOnly>} />
+        <Route path="/system" element={<AdminOnly><System /></AdminOnly>} />
         <Route path="/admin/devices" element={<AdminOnly><AdminDevices /></AdminOnly>} />
         <Route path="/admin/rules" element={<AdminOnly><AdminRules /></AdminOnly>} />
         <Route path="/admin/users" element={<AdminOnly><AdminUsers /></AdminOnly>} />

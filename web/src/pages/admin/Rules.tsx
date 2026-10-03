@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlarmRule, api, Device, RuleType, Severity } from "../../api";
-import { useDevices } from "../Overview";
+import { useDevices } from "../../hooks";
 import { ErrorText, Loading, Modal, SeverityBadge } from "../../components/ui";
 
 const TYPE_LABELS: Record<RuleType, string> = {

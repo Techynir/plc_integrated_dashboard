@@ -39,6 +39,8 @@ class Settings:
     cookie_secure: bool = field(default_factory=lambda: _bool("COOKIE_SECURE", False))
     # Parent domain shared by the dashboard and the simulator (sim.<domain>) so one sign-in
     # covers both. Empty = host-only cookie (fine locally: cookies ignore the port).
+    # Plant local time zone: shifts (A 06-14, B 14-22, C 22-06) and daily rollups use it.
+    plant_tz: str = field(default_factory=lambda: os.environ.get("PLANT_TZ", "Asia/Kolkata"))
     cookie_domain: str = field(default_factory=lambda: os.environ.get("COOKIE_DOMAIN", ""))
 
     admin_email: str = field(default_factory=lambda: os.environ.get("ADMIN_EMAIL", "admin@example.com"))

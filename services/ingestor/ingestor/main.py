@@ -13,7 +13,7 @@ import aiomqtt
 import asyncpg
 import httpx
 
-from .alarms import AlarmEngine, Transition, format_message
+from .alarms import RESTART_GRACE_S, AlarmEngine, Transition, format_message
 from .parsing import (
     InvalidMessage,
     TagConfig,
@@ -264,7 +264,12 @@ class Ingestor:
 
         was_offline = not dev.online
         dev.online, dev.last_seen = True, received_at
+        if msg.status == "RUN" and dev.status != "RUN":
+            dev.run_since = received_at  # restart: process alarms stay held off for a grace period
         dev.status = msg.status or dev.status
+        inhibited = dev.status is not None and dev.status != "RUN" or (
+            dev.run_since is not None and (received_at - dev.run_since).total_seconds() < RESTART_GRACE_S
+        )
 
         await self.publish(
             f"app/live/{msg.device_id}",
@@ -277,7 +282,9 @@ class Ingestor:
                 "values": {r.tag: {"v": r.display_value, "q": r.quality} for r in readings if not r.rejected},
             },
         )
-        transitions = self.engine.on_readings(msg.device_id, readings, msg.status)
+        transitions = self.engine.on_readings(
+            msg.device_id, readings, msg.status, received_at.timestamp(), inhibited
+        )
         if was_offline:
             await self.publish_status(dev)
             transitions += self.engine.on_offline_time(msg.device_id, 0)

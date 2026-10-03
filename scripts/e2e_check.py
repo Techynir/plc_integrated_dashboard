@@ -333,6 +333,69 @@ async def main() -> None:
         r = await http.get("/api/v1/system/logs")
         check(r.status_code in (200, 503), f"logs endpoint answers ({r.status_code})")
 
+        # ---- asset console: roles, limits -> managed alarm rules, analytics endpoints
+        def rec(speed: float, vib: float) -> tuple[str, str]:
+            return (topic, json.dumps({**base, "ts": now_iso(), "status": "RUN", "tags": {"speed": speed, "vib": vib}}))
+
+        await publish(password, [rec(275.0 + i % 3, 3.0) for i in range(5)])
+        await asyncio.sleep(1.5)
+        put = f"/api/v1/devices/{DEVICE}/tag-settings"
+        r = await http.put(put, json={"tags": [{"tag": "vib", "limit_dir": "high", "warn_limit": 5, "crit_limit": 4}]})
+        check(r.status_code == 422, "high limit with critical below warning is refused")
+        r = await http.put(put, json={"tags": [{"tag": "speed", "role": "speed"}, {"tag": "vib", "role": "speed"}]})
+        check(r.status_code == 400, "a role can be assigned to one tag only")
+        r = await http.put(put, json={"tags": [
+            {"tag": "speed", "role": "speed", "unit": "m/min", "min_value": 274, "max_value": 279,
+             "limit_dir": "low", "warn_limit": 260, "crit_limit": 240},
+            {"tag": "vib", "role": "vibration", "unit": "mm/s", "min_value": 2.8, "max_value": 3.3,
+             "limit_dir": "high", "warn_limit": 4.5, "crit_limit": 5.5, "suppress_when_stopped": False,
+             "guidance": "Check bearing lubrication"},
+        ]})
+        check(r.status_code == 200, "tag roles and limits saved")
+        managed = [x for x in (await http.get("/api/v1/alarm-rules")).json() if (x.get("managed_by") or "").startswith(f"limit:{DEVICE}:")]
+        check(len(managed) == 4, f"limits became managed alarm rules ({len(managed)})")
+        r = await http.delete(f"/api/v1/alarm-rules/{managed[0]['id']}")
+        check(r.status_code == 409, "managed rules cannot be deleted directly")
+
+        await asyncio.sleep(1)  # rules reload
+        for _ in range(6):  # 6 s above the critical limit: longer than the 3 s on-delay
+            await publish(password, [rec(276.0, 6.0)])
+            await asyncio.sleep(1)
+        act = (await http.get("/api/v1/alarms", params={"device_id": DEVICE})).json()
+        vib_alarm = next((a for a in act if a["tag"] == "vib" and a["severity"] == "critical"), None)
+        check(vib_alarm is not None and vib_alarm["context"] == "Check bearing lubrication",
+              "limit alarm raised after the on-delay, with operator guidance")
+        r = await http.post("/api/v1/alarms/ack-all", json={"device_id": DEVICE})
+        check(r.status_code == 200 and r.json()["acknowledged"] >= 1, "acknowledge all alarms of an asset")
+        s = (await http.get("/api/v1/alarms/summary", params={"device_id": DEVICE})).json()
+        check(s["unacked_active"] == 0 and s["count"] >= 1 and s["top_sources"], "alarm summary")
+
+        a = f"/api/v1/assets/{DEVICE}"
+        r = await http.get(f"{a}/summary")
+        check(r.status_code == 200 and r.json()["roles"]["speed"]["tag"] == "speed" and r.json()["totals"]["run"] > 0,
+              "asset summary: roles and running time")
+        for spd in (0.0, 0.0, 0.0, 276.0):  # speed drops to 0 for ~3 s: a stop (running state from speed role)
+            await publish(password, [rec(spd, 3.0)])
+            await asyncio.sleep(1)
+        p = (await http.get(f"{a}/performance", params={"hours": 1})).json()
+        check(len(p["stops"]) == 1 and 0 < p["availability"] < 1 and len(p["shifts"]) == 3 and p["avg_speed_running"] > 270,
+              "performance: stop detected from speed")
+        r = await http.put(f"{a}/stoppages/{p['stops'][0]['start']}", json={"reason": "Web break"})
+        p = (await http.get(f"{a}/performance", params={"hours": 1})).json()
+        check(r.status_code == 200 and p["stops"][0]["reason"] == "Web break", "stoppage reason saved and shown")
+        q = (await http.get(f"{a}/quality", params={"hours": 1})).json()
+        check("missing" in q, "quality says which role is missing (no moisture tag)")
+        h = await http.get(f"{a}/health")
+        check(h.status_code == 200 and h.json()["components"]["bearing"] is not None, "health score with bearing part")
+        dq = (await http.get(f"{a}/data-quality", params={"hours": 1})).json()
+        check(len(dq["checklist"]) == 7 and dq["per_tag"], "data quality with seeded commissioning checklist")
+        item = dq["checklist"][0]["id"]
+        r = await http.patch(f"{a}/checklist/{item}", json={"status": "done"})
+        check(r.status_code == 200, "checklist item updated")
+        st = (await http.get(f"{a}/stats", params={"tags": "speed,vib", "from": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)).isoformat(),
+                                                    "to": now_iso()})).json()
+        check({t["tag"] for t in st["tags"]} == {"speed", "vib"} and st["tags"][1]["max"] == 6.0, "trend statistics")
+
         # cleanup
         await http.delete(f"/api/v1/users/{viewer_id}")
         await http.delete(f"/api/v1/alarm-rules/{rule_id}")

@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, Credentials, Device } from "../../api";
 import { formatAge, secondsSince } from "../../format";
-import { useDevices } from "../Overview";
+import { useDevices } from "../../hooks";
 import { CopyButton, ErrorText, Loading, Modal, SimulatedBadge, StatusBadge, useNow } from "../../components/ui";
 
 function samplePayload(deviceId: string): string {
@@ -243,7 +243,7 @@ export function AdminDevices() {
                 {devices.data.map((d) => (
                   <tr key={d.device_id} style={focus === d.device_id ? { background: "var(--accent-soft)" } : undefined}>
                     <td>
-                      <Link to={`/devices/${encodeURIComponent(d.device_id)}`} style={{ fontWeight: 500 }}>
+                      <Link to={`/live?asset=${encodeURIComponent(d.device_id)}`} style={{ fontWeight: 500 }}>
                         {d.name || d.device_id}
                       </Link>
                       <div className="small muted mono">{d.device_id}</div>

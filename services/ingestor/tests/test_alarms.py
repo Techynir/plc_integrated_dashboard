@@ -88,3 +88,41 @@ def test_fault_transition_has_no_numeric_value():
     [tr] = e.on_readings("d1", [reading(1)], "FAULT")
     assert tr.action == "raise" and tr.value is None
     assert format_message(tr.rule, "d1", tr.value) == "d1 reported FAULT"
+
+
+def delayed(rule_type="high", threshold=50.0, suppress=False, **kw):
+    return Rule(7, "r", None, "t", rule_type, threshold, 0.0, "warning", "", None,
+                on_delay_s=3, off_delay_s=3, suppress_when_stopped=suppress, **kw)
+
+
+def test_on_and_off_delay_prevent_chattering():
+    e = AlarmEngine()
+    e.load([delayed()], {})
+    assert e.on_readings("d", [reading(60)], None, now=0) == []
+    assert e.on_readings("d", [reading(60)], None, now=2) == []          # not yet 3 s
+    assert e.on_readings("d", [reading(40)], None, now=2.5) == []        # dipped: timer resets
+    assert e.on_readings("d", [reading(60)], None, now=3) == []
+    [tr] = e.on_readings("d", [reading(61)], None, now=6)               # held 3 s -> raise
+    assert tr.action == "raise"
+    e.mark_raised(7, "d", 1)
+    assert e.on_readings("d", [reading(40)], None, now=7) == []          # clear needs 3 s too
+    [tr] = e.on_readings("d", [reading(40)], None, now=10)
+    assert tr.action == "clear"
+
+
+def test_suppressed_while_stopped():
+    e = AlarmEngine()
+    e.load([delayed(suppress=True)], {})
+    for t in range(0, 10):
+        assert e.on_readings("d", [reading(99)], "STOP", now=t, inhibited=True) == []
+    e.mark_raised(7, "d", 1)  # an alarm that was already active clears (after the off delay)
+    e.on_readings("d", [reading(99)], "STOP", now=20, inhibited=True)
+    [tr] = e.on_readings("d", [reading(99)], "STOP", now=23, inhibited=True)
+    assert tr.action == "clear"
+
+
+def test_stopped_rule_type():
+    e = AlarmEngine()
+    e.load([rule("stopped", tag=None)], {})
+    [tr] = e.on_readings("d", [], "STOP")
+    assert tr.action == "raise" and format_message(tr.rule, "d", None) == "d machine stopped"

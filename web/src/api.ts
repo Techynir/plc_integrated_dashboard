@@ -1,4 +1,6 @@
 export type Role = "viewer" | "operator" | "admin";
+/** What a tag means to the analytics screens (Asset configuration). */
+export type Role_ = "machine_status" | "speed" | "motor_current" | "steam_pressure" | "moisture" | "vibration";
 export type DataType = "number" | "boolean" | "string";
 export type Quality = "GOOD" | "UNCERTAIN" | "BAD";
 export type Severity = "critical" | "warning" | "info";
@@ -27,6 +29,14 @@ export interface Tag {
   pinned: boolean;
   configured: boolean;
   value_labels?: Record<string, string> | null;
+  valid_min?: number | null;
+  valid_max?: number | null;
+  limit_dir?: "high" | "low" | null;
+  warn_limit?: number | null;
+  crit_limit?: number | null;
+  role?: Role_ | null;
+  suppress_when_stopped?: boolean;
+  guidance?: string;
   value: TagValue;
   quality: Quality | null;
   ts: string | null;
@@ -43,6 +53,25 @@ export interface Connection {
   status_topic: string;
   qos: number;
   last_will: { topic: string; payload: string; qos: number; retain: boolean };
+}
+
+export interface AssetConfig {
+  protocol?: string;
+  gateway?: string;
+  plc_ip?: string;
+  port?: number | string;
+  unit_id?: number | string;
+  function_code?: string;
+  block_read?: string;
+  poll_interval_ms?: number;
+  timeout?: string;
+  timestamp_source?: string;
+  on_read_failure?: string;
+  byte_order?: "ABCD" | "CDAB" | "BADC" | "DCBA";
+  running_source?: "auto" | "status" | "speed";
+  running_speed_min?: number | null;
+  comms_timeout_s?: number | null;
+  speed_target?: number | null;
 }
 
 export interface Device {
@@ -62,6 +91,8 @@ export interface Device {
   msg_count: number;
   created_at: string;
   simulated: boolean;
+  asset_type?: string;
+  asset_config?: AssetConfig;
   active_alarms: number;
   top_severity: Severity | null;
   tag_count?: number;
@@ -84,6 +115,7 @@ export interface Alarm {
   acked_at: string | null;
   acked_by: string | null;
   ack_comment: string | null;
+  context?: string;
   active: boolean;
 }
 

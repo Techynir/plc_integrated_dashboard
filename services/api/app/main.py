@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from . import db
 from .broker import link
-from .routers import alarms, auth, devices, logs, stream, system, users
+from .routers import alarms, assets, auth, devices, logs, stream, system, users
 
 
 class JsonFormatter(logging.Formatter):
@@ -49,7 +49,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
-for module in (auth, devices, alarms, users, system, logs, stream):
+for module in (auth, devices, assets, alarms, users, system, logs, stream):
     app.include_router(module.router, prefix="/api/v1")
 
 

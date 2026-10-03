@@ -50,8 +50,8 @@ async def raw_messages(
     limit: int = Query(100, ge=1, le=1000),
     _: CurrentUser = Depends(viewer),
 ) -> list[dict]:
-    """Telemetry exactly as received over MQTT (last 3 days), newest first, with the parse outcome."""
-    clauses, args = ["ts > now() - interval '3 days'"], []
+    """Telemetry exactly as received over MQTT (last 7 days), newest first, with the parse outcome."""
+    clauses, args = ["ts > now() - interval '7 days'"], []
     if device_id:
         args.append(device_id)
         clauses.append(f"device_id = ${len(args)}")

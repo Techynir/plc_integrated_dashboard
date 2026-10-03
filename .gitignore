@@ -21,3 +21,6 @@ infra/*/*.tfstate.*
 infra/*/terraform.tfvars
 
 .DS_Store
+
+# local database dumps (scripts/sync-from-gcp.sh)
+backups/

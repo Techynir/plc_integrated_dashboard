@@ -19,6 +19,7 @@ class DeviceState:
     last_seen: dt.datetime | None
     status: str | None
     simulated: bool = False
+    run_since: dt.datetime | None = None  # when the machine last went to RUN (restart grace)
 
     @property
     def offline_after_s(self) -> float:
@@ -78,7 +79,8 @@ class Store:
 
     async def load_rules(self) -> list[Rule]:
         rows = await self.pool.fetch(
-            "SELECT id, name, device_id, tag, rule_type, threshold, deadband, severity, message, webhook_url "
+            "SELECT id, name, device_id, tag, rule_type, threshold, deadband, severity, message, webhook_url, "
+            "on_delay_s, off_delay_s, suppress_when_stopped, guidance "
             "FROM alarm_rules WHERE enabled"
         )
         return [Rule(**dict(r)) for r in rows]
@@ -203,7 +205,7 @@ class Store:
     # ---------------------------------------------------------------- alarms
 
     ALARM_COLUMNS = (
-        "id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, "
+        "id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, context, "
         "raised_at, cleared_at, acked_at, acked_by, ack_comment"
     )
 
@@ -211,12 +213,12 @@ class Store:
         """Returns (alarm, created). If an alarm is already active for the rule/device it is returned as-is."""
         row = await self.pool.fetchrow(
             f"""
-            INSERT INTO alarms (rule_id, rule_name, device_id, tag, severity, message, trigger_value)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO alarms (rule_id, rule_name, device_id, tag, severity, message, trigger_value, context)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (rule_id, device_id) WHERE cleared_at IS NULL DO NOTHING
             RETURNING {self.ALARM_COLUMNS}
             """,
-            rule.id, rule.name, device_id, rule.tag, rule.severity, message, value,
+            rule.id, rule.name, device_id, rule.tag, rule.severity, message, value, rule.guidance,
         )
         if row is not None:
             return self._alarm_dict(row), True

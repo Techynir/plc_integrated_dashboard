@@ -7,10 +7,10 @@ from typing import AsyncIterator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .. import db
-from .. import mqtt_accounts, register_map
+from .. import limits, mqtt_accounts, register_map
 from ..config import settings
 from ..deps import CurrentUser, admin, viewer
 from ..history import query_history
@@ -24,7 +24,7 @@ QUALITY = {0: "GOOD", 1: "UNCERTAIN", 2: "BAD"}
 DEVICE_COLUMNS = """
     d.device_id, d.name, d.site, d.line, d.description, d.expected_interval_s, d.enabled,
     d.has_credentials, d.online, d.status, d.last_seen, d.last_seq, d.seq_gaps, d.msg_count, d.created_at,
-    d.simulated,
+    d.simulated, d.asset_type, d.asset_config,
     (SELECT count(*) FROM alarms a WHERE a.device_id = d.device_id AND a.cleared_at IS NULL) AS active_alarms,
     (SELECT a.severity FROM alarms a WHERE a.device_id = d.device_id AND a.cleared_at IS NULL
       ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END LIMIT 1) AS top_severity
@@ -33,6 +33,7 @@ DEVICE_COLUMNS = """
 TAG_COLUMNS = """
     t.device_id, t.tag, t.display_name, t.unit, t.data_type, t.value_scale, t.value_offset,
     t.min_value, t.max_value, t.decimals, t.pinned, t.configured, t.value_labels, t.valid_min, t.valid_max,
+    t.limit_dir, t.warn_limit, t.crit_limit, t.role, t.suppress_when_stopped, t.guidance,
     l.ts, l.value_num, l.value_text, l.quality
 """
 
@@ -56,6 +57,8 @@ class DeviceUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     expected_interval_s: float | None = Field(default=None, gt=0, le=86400)
     enabled: bool | None = None
+    asset_type: str | None = Field(default=None, max_length=80)
+    asset_config: dict | None = None  # connection details shown in Asset configuration
 
 
 class TagUpdate(BaseModel):
@@ -103,6 +106,12 @@ def tag_dict(row) -> dict:
         "value_labels": row["value_labels"],
         "valid_min": row["valid_min"],
         "valid_max": row["valid_max"],
+        "limit_dir": row["limit_dir"],
+        "warn_limit": row["warn_limit"],
+        "crit_limit": row["crit_limit"],
+        "role": row["role"],
+        "suppress_when_stopped": row["suppress_when_stopped"],
+        "guidance": row["guidance"],
         "value": tag_value(row),
         "quality": QUALITY.get(row["quality"]) if row["quality"] is not None else None,
         "ts": row["ts"].isoformat() if row["ts"] else None,
@@ -195,7 +204,10 @@ async def list_devices(_: CurrentUser = Depends(viewer)) -> list[dict]:
         all_tags = by_device.get(d["device_id"], [])
         pinned = [t for t in all_tags if t["pinned"]]
         d["tag_count"] = len(all_tags)
-        d["preview_tags"] = (pinned or [t for t in all_tags if t["data_type"] != "string"])[:6]
+        preview = (pinned or [t for t in all_tags if t["data_type"] != "string"])[:6]
+        # tags with an analytics role (speed, moisture, ...) are always included for the asset cards
+        preview += [t for t in all_tags if t.get("role") and t not in preview]
+        d["preview_tags"] = preview
         result.append(d)
     return result
 
@@ -319,7 +331,8 @@ async def update_tag(device_id: str, tag: str, body: TagUpdate, user: CurrentUse
     )
     if result == "UPDATE 0":
         raise HTTPException(404, "Tag not found")
-    await notify_config_changed()
+    async with db.pool().acquire() as conn:
+        await limits.sync_limit_rules(conn, device_id)
     await db.audit(user.email, "tag.update", f"{device_id}/{tag}", body.model_dump(exclude_unset=True))
     row = await db.pool().fetchrow(
         f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) "
@@ -424,6 +437,75 @@ async def put_register_map(device_id: str, body: RegisterMapIn, user: CurrentUse
         await conn.execute("NOTIFY config_changed")
     await db.audit(user.email, "device.register_map", device_id, {"registers": len(regs)})
     return await get_register_map(device_id, user)
+
+
+# ---------------------------------------------------------------- tag settings (Asset configuration)
+
+ROLE_NAMES = Literal["machine_status", "speed", "motor_current", "steam_pressure", "moisture", "vibration"]
+
+
+class TagSettingIn(BaseModel):
+    tag: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    display_name: str | None = Field(default=None, max_length=120)
+    unit: str | None = Field(default=None, max_length=32)
+    min_value: float | None = None  # normal range
+    max_value: float | None = None
+    limit_dir: Literal["high", "low"] | None = None
+    warn_limit: float | None = None
+    crit_limit: float | None = None
+    role: ROLE_NAMES | None = None
+    suppress_when_stopped: bool = True
+    guidance: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def check(self) -> "TagSettingIn":
+        if self.min_value is not None and self.max_value is not None and self.min_value > self.max_value:
+            raise ValueError(f"{self.tag}: normal minimum is above the maximum")
+        if self.limit_dir and self.warn_limit is not None and self.crit_limit is not None:
+            if self.limit_dir == "high" and self.crit_limit < self.warn_limit:
+                raise ValueError(f"{self.tag}: for a high limit, critical must be above warning")
+            if self.limit_dir == "low" and self.crit_limit > self.warn_limit:
+                raise ValueError(f"{self.tag}: for a low limit, critical must be below warning")
+        if not self.limit_dir and (self.warn_limit is not None or self.crit_limit is not None):
+            raise ValueError(f"{self.tag}: choose high or low for the limits")
+        return self
+
+
+class TagSettingsIn(BaseModel):
+    tags: list[TagSettingIn] = Field(max_length=500)
+
+
+@router.put("/{device_id}/tag-settings")
+async def put_tag_settings(device_id: str, body: TagSettingsIn, user: CurrentUser = Depends(admin)) -> list[dict]:
+    """Save names, units, normal range, warning/critical limits and roles for many tags at once.
+    Limits become alarm rules (app/limits.py)."""
+    await get_device_row(device_id)
+    roles = [t.role for t in body.tags if t.role]
+    if len(roles) != len(set(roles)):
+        raise HTTPException(400, "Each role can be assigned to one tag only")
+    async with db.pool().acquire() as conn, conn.transaction():
+        if roles:  # a role moves to the tag it is assigned to now
+            await conn.execute("UPDATE tags SET role = NULL WHERE device_id = $1 AND role = ANY($2)", device_id, roles)
+        for t in body.tags:
+            res = await conn.execute(
+                """
+                UPDATE tags SET display_name = coalesce($3, display_name), unit = coalesce($4, unit),
+                    min_value = $5, max_value = $6, limit_dir = $7, warn_limit = $8, crit_limit = $9, role = $10,
+                    suppress_when_stopped = $11, guidance = $12, configured = true
+                WHERE device_id = $1 AND tag = $2
+                """,
+                device_id, t.tag, t.display_name, t.unit, t.min_value, t.max_value, t.limit_dir,
+                t.warn_limit, t.crit_limit, t.role, t.suppress_when_stopped, t.guidance,
+            )
+            if res == "UPDATE 0":
+                raise HTTPException(404, f"Tag {t.tag} not found")
+        await limits.sync_limit_rules(conn, device_id)
+    await db.audit(user.email, "tag.settings", device_id, {"tags": len(body.tags)})
+    rows = await db.pool().fetch(
+        f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) WHERE t.device_id = $1 ORDER BY t.tag",
+        device_id,
+    )
+    return [tag_dict(r) for r in rows]
 
 
 @router.get("/{device_id}/history")
