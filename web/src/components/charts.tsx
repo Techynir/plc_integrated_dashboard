@@ -3,6 +3,7 @@
  * every chart redraws when the theme changes.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import * as echarts from "echarts/core";
 import { BarChart, CustomChart, LineChart, ScatterChart } from "echarts/charts";
 import { GridComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
@@ -164,6 +165,10 @@ export interface Lane {
   step?: boolean;
   valueLabels?: Record<string, string> | null;
   current?: string;
+  /** OK when the live value is in its normal state, otherwise NG. */
+  verdict?: "OK" | "NG";
+  /** Where an NG verdict opens, usually Alarms & events for this tag. */
+  verdictHref?: string;
   sub?: string;
   /** series colour (CSS value or var(--…)); default = neutral trace */
   color?: string;
@@ -283,8 +288,12 @@ export function Lanes({
   }, [lanes, from, to, gapMs, laneHeight, t]);
 
   const height = lanes.length * laneHeight + 26;
+  const readout = lanes.some((l) => l.verdict);
   return (
-    <div className="lanes" style={showValues ? undefined : { gridTemplateColumns: "1fr" }}>
+    <div
+      className={`lanes${readout ? " with-verdict" : ""}`}
+      style={showValues ? undefined : { gridTemplateColumns: "1fr" }}
+    >
       {showValues && (
         <div className="labels" style={{ paddingTop: 0 }}>
           {lanes.map((l) => (
@@ -294,12 +303,28 @@ export function Lanes({
                 {l.label}
               </b>
               <span>{l.sub ?? l.unit}</span>
-              {l.current !== undefined && <span className="lv">{l.current}</span>}
+              {l.current !== undefined && !readout && <span className="lv">{l.current}</span>}
             </div>
           ))}
         </div>
       )}
       <EChart option={option} height={height} ariaLabel={`Trend of ${lanes.map((l) => l.label).join(", ")}`} />
+      {readout && (
+        <div className="readout">
+          {lanes.map((l) => (
+            <div key={l.key} className="rv" style={{ height: laneHeight }}>
+              <span className="lv">{l.current || "—"}</span>
+              {l.verdict === "NG" && l.verdictHref ? (
+                <Link to={l.verdictHref} className="verdict ng" title={`Show ${l.label} in Alarms & events`}>
+                  NG
+                </Link>
+              ) : (
+                <span className={`verdict ${l.verdict === "OK" ? "ok" : "ng"}`}>{l.verdict ?? "NG"}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

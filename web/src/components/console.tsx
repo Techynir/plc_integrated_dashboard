@@ -3,6 +3,7 @@ import { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Tag } from "../api";
 import { useAuth } from "../auth";
+import { formatValue } from "../format";
 
 // ---------------------------------------------------------------- formatting
 
@@ -60,6 +61,22 @@ export function tagState(tag: Tag, value: unknown, opts: { comms?: boolean; bad?
     return { cls: "dev", label: "Off target" };
   }
   return { cls: "ok", label: "Normal" };
+}
+
+/** Why a live value is NG on the plant chart, or null when it is OK. */
+export function tagFault(tag: Tag, value: unknown, opts: { comms?: boolean; bad?: boolean } = {}): { cls: StateCls; label: string; text: string } | null {
+  const st = tagState(tag, value, opts);
+  if (st.cls === "ok" && typeof value === "number") return null;
+  const name = tag.display_name || tag.tag;
+  const shown = typeof value === "number" ? `${formatValue(value, tag)}${tag.unit ? ` ${tag.unit}` : ""}` : null;
+  if (opts.comms) return { cls: "comms", label: "Comms lost", text: `${name}: communication lost` };
+  if (opts.bad) return { cls: "bad", label: "Bad quality", text: `${name}: bad quality${shown ? ` (${shown})` : ""}` };
+  if (typeof value !== "number") return { cls: "bad", label: "No data", text: `${name}: no data` };
+  return {
+    cls: st.cls,
+    label: st.label,
+    text: st.cls === "dev" ? `${name}: off target (${shown})` : `${name}: ${st.label.toLowerCase()} (${shown})`,
+  };
 }
 
 // ---------------------------------------------------------------- small components

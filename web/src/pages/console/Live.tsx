@@ -7,8 +7,8 @@ import { useAuth } from "../../auth";
 import { mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
 import { useLiveDevice } from "../../live";
 import { formatValue } from "../../format";
-import { Chip, fmtDT, fmtDur, fmtNum, fmtT, limitText, normalText, Panel, RangeBar, ScreenHead, tagState } from "../../components/console";
-import { Lane, Lanes, Sparkline } from "../../components/charts";
+import { Chip, fmtDT, fmtDur, fmtNum, fmtT, Panel, ScreenHead, tagFault } from "../../components/console";
+import { Lane, Lanes } from "../../components/charts";
 import { Loading, useNow } from "../../components/ui";
 
 export const ROLE_ORDER = ["machine_status", "speed", "motor_current", "steam_pressure", "moisture", "vibration"];
@@ -73,7 +73,6 @@ export function Live({ embedded = false }: { embedded?: boolean }) {
   const d = detail.data;
   const m = mergeLive(d, l);
   const allTags = d.tags ?? [];
-  const cardTags = orderTags(allTags.filter((t) => t.role !== "machine_status"));
   const conflict = !!perf.data?.state_source.startsWith("CONFLICT");
   const running = runningNow(d, allTags, m.value, m.status, conflict);
   const lastSeg = perf.data?.segments.filter((s) => s.state !== "comms").pop();
@@ -162,43 +161,20 @@ export function Live({ embedded = false }: { embedded?: boolean }) {
         </div>
       )}
 
-      <div className="kpis">
-        {cardTags.map((t) => {
-          const v = m.value(t);
-          const bad = m.quality(t) === 2;
-          const st = tagState(t, v, { comms, bad });
-          const cls = st.cls === "warn" ? "warn" : st.cls === "crit" ? "crit" : st.cls === "comms" ? "comms" : st.cls === "bad" ? "bad" : "";
-          const spark = (hist.data?.series[t.tag] ?? []).map((p) => [p[0], p[1]] as [number, number | null]);
-          return (
-            <div key={t.tag} className={`kpi ${cls}`}>
-              <div className="kh">
-                <div>
-                  <div className="kl">{t.display_name || t.tag}</div>
-                  <div className="kt">{t.tag}</div>
-                </div>
-                <Chip cls={st.cls}>{st.label}</Chip>
-              </div>
-              <div className="kv2">
-                {formatValue(v, t)}
-                {t.unit && !t.value_labels ? <small>{t.unit}</small> : null}
-              </div>
-              {typeof v === "number" && <RangeBar tag={t} value={v} />}
-              {t.data_type === "number" && spark.length > 1 && <Sparkline points={spark} range={t.min_value != null && t.max_value != null ? [t.min_value, t.max_value] : null} ariaLabel={`${t.display_name || t.tag}, last 15 minutes`} />}
-              <div className="kf">
-                <span>{normalText(t)}</span>
-                <span>{limitText(t)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
       <Panel title="Last 15 minutes" sub="Shaded band = normal range · dashed = warning / critical">
         {tags.length === 0 ? (
           <div className="empty">No numeric tags yet.</div>
         ) : (
           <Lanes
-            lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`))}
+            lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`)).map((lane) => {
+              const t = tags.find((x) => x.tag === lane.key)!;
+              const fault = tagFault(t, m.value(t), { comms, bad: m.quality(t) === 2 });
+              return {
+                ...lane,
+                verdict: fault ? ("NG" as const) : ("OK" as const),
+                verdictHref: fault ? `/alarms?${new URLSearchParams({ asset: d.device_id, tag: t.tag })}` : undefined,
+              };
+            })}
             from={end - span}
             to={end}
             gapMs={Math.max(15, d.asset_config?.comms_timeout_s ?? 15) * 1000}

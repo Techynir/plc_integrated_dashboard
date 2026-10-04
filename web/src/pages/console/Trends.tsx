@@ -16,11 +16,49 @@ const RANGES = [
   { key: "24h", label: "24 h", ms: 24 * 3600_000 },
 ];
 
+/** Plant shifts, local time. C runs from 22:00 through 06:00 the next morning. */
+const SHIFTS = [
+  { key: "A", label: "A · 06–14", from: "06:00", to: "14:00" },
+  { key: "B", label: "B · 14–22", from: "14:00", to: "22:00" },
+  { key: "C", label: "C · 22–06", from: "22:00", to: "06:00" },
+] as const;
+
+type ShiftKey = (typeof SHIFTS)[number]["key"];
+
+function ymd(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function atLocal(date: string, time: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
+}
+
+/** One calendar day, a clock range on that day, or a shift. A clock that passes midnight ends the next morning. */
+function customWindow(date: string, timeFrom: string, timeTo: string): { from: number; to: number } | null {
+  if (!date) return null;
+  if (!timeFrom && !timeTo) {
+    const from = atLocal(date, "00:00");
+    return { from, to: from + 86_400_000 };
+  }
+  const from = atLocal(date, timeFrom || "00:00");
+  let to = atLocal(date, timeTo || "23:59");
+  if (to <= from) to += 86_400_000;
+  return { from, to };
+}
+
 export function Trends() {
   const { asset, loading } = useAsset();
   const id = asset?.device_id;
   const detail = useDevice(id, 60_000);
   const [range, setRange] = useState("1h");
+  const [date, setDate] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
+  const [shift, setShift] = useState<ShiftKey | "">("");
   const [picked, setPicked] = useState<string[] | null>(null);
   const now = useNow(10_000);
   const tags = useMemo(() => orderTags((detail.data?.tags ?? []).filter((t) => t.data_type === "number")), [detail.data]);
@@ -35,9 +73,13 @@ export function Trends() {
   const shown = tags.filter((t) => selected.includes(t.tag));
 
   const span = RANGES.find((r) => r.key === range)!.ms;
-  const { end, anchored } = windowEnd(asset?.last_seen, span, Math.floor(now / 10_000) * 10_000);
-  const from = end - span;
-  const hist = useHistory(id, shown.map((t) => t.tag), from, end, anchored ? false : span <= 3600_000 ? 10_000 : 60_000);
+  const live = windowEnd(asset?.last_seen, span, Math.floor(now / 10_000) * 10_000);
+  const custom = customWindow(date, timeFrom, timeTo);
+  const from = custom ? custom.from : live.end - span;
+  const end = custom ? custom.to : live.end;
+  const anchored = custom ? false : live.anchored;
+  const watching = custom ? end > now : !anchored;
+  const hist = useHistory(id, shown.map((t) => t.tag), from, end, watching ? (end - from <= 3600_000 ? 10_000 : 60_000) : false);
   const stats = useQuery({
     queryKey: ["asset", id, "stats", shown.map((t) => t.tag).join(","), Math.round(from / 60_000), Math.round(end / 60_000)],
     queryFn: () =>
@@ -49,6 +91,35 @@ export function Trends() {
   if (loading || detail.isLoading) return <Loading />;
   if (!asset) return <div className="panel empty">No asset selected.</div>;
 
+  const dayOfData = ymd(asset.last_seen ? new Date(asset.last_seen).getTime() : now);
+  const usePreset = (key: string) => {
+    setRange(key);
+    setDate("");
+    setTimeFrom("");
+    setTimeTo("");
+    setShift("");
+  };
+  const useShift = (key: ShiftKey) => {
+    const s = SHIFTS.find((x) => x.key === key)!;
+    setShift(key);
+    setDate((d) => d || dayOfData);
+    setTimeFrom(s.from);
+    setTimeTo(s.to);
+  };
+  const useDate = (value: string) => {
+    setDate(value);
+    if (!value) {
+      setTimeFrom("");
+      setTimeTo("");
+      setShift("");
+    }
+  };
+  const useTime = (which: "from" | "to", value: string) => {
+    setShift("");
+    if (which === "from") setTimeFrom(value);
+    else setTimeTo(value);
+    setDate((d) => d || dayOfData);
+  };
   const toggle = (tag: string, on: boolean) => {
     const next = on ? [...selected, tag] : selected.filter((t) => t !== tag);
     if (next.length) setPicked(next); // keep at least one signal
@@ -75,8 +146,27 @@ export function Trends() {
         <div className="toolbar" style={{ marginBottom: 10 }}>
           <div className="segmented" role="group" aria-label="Time range">
             {RANGES.map((r) => (
-              <button key={r.key} type="button" className={range === r.key ? "on" : ""} aria-pressed={range === r.key} onClick={() => setRange(r.key)}>
+              <button key={r.key} type="button" className={!custom && range === r.key ? "on" : ""} aria-pressed={!custom && range === r.key} onClick={() => usePreset(r.key)}>
                 {r.label}
+              </button>
+            ))}
+          </div>
+          <label className="filter">
+            Date
+            <input type="date" value={date} max={ymd(now)} onChange={(e) => useDate(e.target.value)} />
+          </label>
+          <label className="filter">
+            From
+            <input type="time" value={timeFrom} onChange={(e) => useTime("from", e.target.value)} />
+          </label>
+          <label className="filter">
+            To
+            <input type="time" value={timeTo} onChange={(e) => useTime("to", e.target.value)} />
+          </label>
+          <div className="segmented" role="group" aria-label="Shift">
+            {SHIFTS.map((s) => (
+              <button key={s.key} type="button" className={shift === s.key ? "on" : ""} aria-pressed={shift === s.key} onClick={() => useShift(s.key)}>
+                {s.label}
               </button>
             ))}
           </div>
