@@ -37,3 +37,19 @@ Items parked for a later decision. Each says what is open, why it matters, and w
 **Status:** note.
 
 Roles, normal ranges, warning/critical limits and guidance for `conveyer-plc-line-01` were entered on the local stack. `./scripts/sync-from-gcp.sh` replaces the local database with the GCP copy, so enter them on GCP (Asset configuration) once the new version is deployed; after that a sync keeps them.
+
+## 4. Process links still missing from the PM-01 demo model
+
+**Status:** parked, 2026-10-04. Revisit when the demo should show the rules in [PROCESS_RULES.md](PROCESS_RULES.md).
+
+**Today.** The generator (`services/ingestor/ingestor/history.py`) was made more realistic after a review of the generated data: poll-time stamps, irregular events, uneven bearing wear, friction current, noisier moisture with over-drying, a sensor noise floor at standstill, and process-caused stops. It still has only the PLC guide's three links: speed → current, speed → vibration, steam → moisture.
+
+**What is open.** The links a real paper machine has (PROCESS_RULES.md, sections 1, 2 and 5):
+- speed → moisture (faster sheet leaves wetter; the review suggested `+0.02 % per m/min` above 276.5)
+- speed → steam pressure (moisture control raises steam with speed)
+- dryer flooding: current up, then moisture up, at normal steam
+- sheet-break signature: current drop, steam cut, moisture held
+- roll resonance: a narrow speed band with much higher vibration
+
+**Change.** Add them to `PM01.step`, extend `tests/test_history.py`, regenerate the week on GCP, then sync local.
+

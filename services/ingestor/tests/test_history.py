@@ -6,8 +6,10 @@ import json
 
 import pytest
 
+from ingestor.bursts import BurstSpacer, Held, block_key
 from ingestor.history import (
     PM01,
+    VIB_NEW,
     Message,
     Scenario,
     d1_payload,
@@ -15,6 +17,7 @@ from ingestor.history import (
     f32,
     generate,
     plan_scenarios,
+    vibration_baseline,
 )
 from ingestor.parsing import InvalidMessage, RegisterDef, TagConfig, decode_telemetry, parse_topic, reject_bad_reads
 
@@ -53,7 +56,9 @@ def test_status_is_one_while_running_and_zero_only_in_stops(two_days):
     stopped = [r for r in regs if r.status == 0]
     assert min(r.speed for r in stopped) == 0.0
     assert max(r.current for r in stopped if r.speed == 0) < 13  # ~11 A at standstill
-    assert min(r.vibration for r in regs) >= 0.2
+    standstill = [r.vibration for r in stopped if r.speed == 0]
+    assert 0.1 <= min(standstill) and max(standstill) < 0.45  # sensor noise floor, never one fixed value
+    assert len({round(v, 3) for v in standstill}) > 50
 
 
 def test_stops_per_day_and_speed_never_jumps(two_days):
@@ -156,3 +161,89 @@ def test_scenarios_cover_outages_and_bad_reads():
 
 def why_is(sc, start):
     return next(w for a, _, w in sc.outages if a == start)
+
+
+@pytest.fixture(scope="module")
+def week():
+    plc = PM01()
+    regs = [plc.step(s) for s in range(7 * DAY)]
+    return plc, regs
+
+
+def test_events_are_irregular(week):
+    plc, _ = week
+    for ev in (plc.ev_speed, plc.ev_steam, plc.ev_current, plc.ev_vibration):
+        starts = [t for _, t in ev.events]
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        assert min(gaps) < 3 * 3600 and max(gaps) > 7 * 3600  # 1-9 h apart, not always 4-6 h
+    per_day = [sum(1 for _, t in plc.ev_steam.events if d * DAY <= t < (d + 1) * DAY) for d in range(7)]
+    assert max(per_day) - min(per_day) >= 2
+
+
+def test_some_stops_are_caused_by_the_process(week):
+    plc, _ = week
+    assert len(plc.causes) == len(plc.stops)
+    trips = [c for c in plc.causes if c != "random"]
+    assert 4 <= len(trips) <= 20  # about 1-2 a day
+    assert {"wet sheet break", "drive overload trip"} <= set(plc.causes)
+    assert 6 * 7 <= len(plc.stops) <= 11 * 7  # still about 8 stops a day in total
+
+
+def test_moisture_varies_and_over_dries_after_steam_recovers(week):
+    _, regs = week
+    running = [r.moisture for r in regs if r.status == 1 and r.pressure > 4.1]
+    assert min(running) < 6.0
+    first_hour = [r.moisture for r in regs[:3600]]
+    assert max(first_hour) - min(first_hour) > 0.15
+
+
+def test_bearing_wear_accelerates_and_varies():
+    offsets = [0.0, 0.03, -0.02, 0.01, 0.0, -0.03, 0.02, 0.0, 0.0]
+    base = [vibration_baseline(d * DAY, offsets) for d in range(8)]
+    assert base[0] == VIB_NEW
+    rises = [b - a for a, b in zip(base, base[1:])]
+    assert any(r < 0 for r in rises)  # some days the baseline even drops a little
+    smooth = [vibration_baseline(d * DAY, [0.0] * 9) for d in range(8)]
+    assert smooth[7] - smooth[6] > 2 * (smooth[1] - smooth[0])  # wear speeds up
+
+
+def test_vibration_adds_friction_current(week):
+    _, regs = week
+    full = [r for r in regs if r.status == 1 and abs(r.speed - 276.5) < 2]
+    calm = [r.current for r in full if r.vibration < 3.4 and r.current < 145]
+    shaky = [r.current for r in full if r.vibration > 4.6 and r.current < 145]
+    gap = sum(shaky) / len(shaky) - sum(calm) / len(calm)
+    assert 1.5 < gap < 5  # +1.5 A per mm/s: noticeable, but stays below the 155 A warning
+
+
+def _held(msg: Message) -> Held:
+    when = dt.datetime.fromtimestamp(msg.received_at, dt.timezone.utc)
+    return Held("t", TOPIC, msg.payload, when, block_key(msg.payload))
+
+
+def test_burst_spacing_gives_each_poll_its_own_second():
+    msgs = [m for m in generate(1_000_000.0, 60, 12345, Scenario()) if isinstance(m, Message)]
+    spacer = BurstSpacer()
+    stamped = []
+    for m in msgs:
+        h = _held(m)
+        for burst in spacer.due(h.received_at, {}):
+            stamped += burst
+        spacer.add(h)
+    for burst in spacer.due(_held(msgs[-1]).received_at, {}, force=True):
+        stamped += burst
+    assert len(stamped) == len(msgs)
+    d1 = [ts.timestamp() for h, ts in stamped if h.block == "400002"]
+    d2 = [ts.timestamp() for h, ts in stamped if h.block == "400001"]
+    assert d1 == d2  # status and values of one poll share its time
+    steps = [round(b - a, 2) for a, b in zip(d1, d1[1:])]
+    assert all(0.85 <= x <= 1.15 for x in steps) and steps.count(1.0) > 0.7 * len(steps)  # 1 s apart, ± send jitter
+    assert all(ts <= h.received_at for h, ts in stamped)  # never later than arrival
+    arrivals = [h.received_at.timestamp() for h, _ in stamped if h.block == "400002"]
+    assert max(b - a for a, b in zip(arrivals, arrivals[1:])) > 4  # they did arrive in bursts
+
+
+def test_other_formats_are_not_held():
+    assert block_key(b'{"schema_version":1,"ts":"2026-01-01T00:00:00Z","values":{}}') is None
+    assert block_key(b"not json") is None
+    assert block_key(d2_payload(1)) == "400001"

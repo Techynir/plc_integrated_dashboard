@@ -88,6 +88,8 @@ If the PLC program cannot build the JSON above, it may send a plain list of valu
 
 With these formats the server's receive time is used as the timestamp, and duplicates cannot be detected (there is no `seq`). **Keep the order of the values fixed**: `result_3` always means "the third value". The admin gives each position a readable name and unit in the dashboard (device page → All tags → Configure).
 
+**Modbus gateway messages** (`{"<NAME>":[{"full_addr":"400002","data":"[...]",...}]}`) carry no timestamp either, and gateways such as the PM3032 send their buffered polls in bursts (for example 5 polls every 5 s, all within a few milliseconds). The server holds each burst until it is complete (0.3 s of silence) and gives every message the time of its poll: polls are spaced one poll interval apart (Asset configuration → *Poll interval*, default the device's expected interval), the newest at the burst's arrival. Records are therefore about 1 s apart, accurate to the gateway's send jitter (~0.1 s). Raw data keeps the real arrival time, which is how *Data quality & link* shows the delivery pattern. If the gateway can add its own poll timestamp, that would be more accurate still.
+
 Every message, accepted or rejected, is visible exactly as received on the device page under **Raw data from PLC** (kept 7 days). This is the quickest way to check what the PLC is actually sending.
 
 ## 4. Testing without the PLC

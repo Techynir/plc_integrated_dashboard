@@ -126,7 +126,7 @@ export interface DataQuality {
   comms_events: { start: number; end: number | null; seconds: number; missing_records: number }[];
   bad_reads: number;
   completeness: number | null;
-  update_interval: { p50_ms: number | null; p95_ms: number | null; series: [number, number][]; burst: { period_s: number; records: number } | null };
+  update_interval: { p50_ms: number | null; p95_ms: number | null; series: [number, number][]; burst: { period_s: number; messages: number } | null };
   comms_timeout_s: number;
   per_tag: { tag: string; label: string; good: number; bad: number; missing: number; completeness: number | null }[];
   registers: { address: number; tag: string; data_type: string; value_num: number | null; value_text: string | null; quality: number | null; ts: string | null }[];

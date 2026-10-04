@@ -622,7 +622,7 @@ export function IntervalChart({ points, timeoutS }: { points: [number, number][]
       animation: false,
       grid: { left: 52, right: 16, top: 14, bottom: 26 },
       xAxis: { type: "time", ...axisCommon(t), axisLabel: { ...axisCommon(t).axisLabel, hideOverlap: true, formatter: (v: number) => fmtT(v, false) } },
-      yAxis: { type: "log", min: 10, max: Math.max(timeoutS * 2000, ...points.map(([, ms]) => ms * 1.5)), ...axisCommon(t), axisLabel: { ...axisCommon(t).axisLabel, formatter: (v: number) => (v >= 1000 ? `${v / 1000} s` : `${v} ms`) } },
+      yAxis: { type: "log", min: 10, max: 10 ** Math.ceil(Math.log10(Math.max(timeoutS * 2000, ...points.map(([, ms]) => ms * 1.5)))), ...axisCommon(t), axisLabel: { ...axisCommon(t).axisLabel, formatter: (v: number) => (v >= 1000 ? `${+(v / 1000).toPrecision(3)} s` : `${+v.toPrecision(3)} ms`) } },
       tooltip: { trigger: "axis", ...tooltipBase(t), valueFormatter: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`) },
       series: [
         {

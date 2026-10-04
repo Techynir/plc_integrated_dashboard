@@ -146,12 +146,13 @@ export function DataQuality() {
               unit="median"
               s={d.update_interval.p95_ms != null ? `p95 ${msText(d.update_interval.p95_ms)}` : undefined}
             />
-            <Tile k="Delivery pattern" v={burst ? `${burst.records}×` : "steady"} s={burst ? `burst every ${fmtNum(burst.period_s, 1)} s` : "one record at a time"} />
+            <Tile k="Delivery pattern" v={burst ? `${burst.messages}×` : "steady"} s={burst ? `burst every ${fmtNum(burst.period_s, 1)} s` : "one record at a time"} />
           </div>
           {burst && (
             <p className="note">
-              The gateway delivers about {burst.records} records together every {fmtNum(burst.period_s, 1)} s. Each record still carries its own time, so trends
-              are unaffected; only outages longer than {d.comms_timeout_s} s count as lost communication (set in Asset configuration).
+              The gateway delivers about {burst.messages} messages together every {fmtNum(burst.period_s, 1)} s. Each record is stored with the time of
+              its poll ({d.interval_s} s apart), not the time the burst arrived, so trends are unaffected; only outages longer than {d.comms_timeout_s} s count as
+              lost communication (set in Asset configuration).
             </p>
           )}
           <div className="grid g-7-5">

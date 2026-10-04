@@ -538,7 +538,8 @@ DEFAULT_CHECKLIST = [
     ("Float32 byte and word order", "Verify one known value end to end (e.g. machine speed on the HMI vs dashboard).", "open"),
     ("Gateway / PLC IP addresses", "Record the PLC and gateway IP addresses in Asset configuration.", "open"),
     ("Status codes", "Status register codes and their meaning (e.g. 0 = Stopped, 1 = Running, 2 = Fault).", "open"),
-    ("Timestamp source", "The gateway sends no timestamp; the server's receive time is used.", "assumed"),
+    ("Timestamp source", "The gateway sends no timestamp; each record gets its poll time (bursts are spaced back by the "
+     "poll interval from their arrival).", "assumed"),
     ("Failure handling", "Bad reads are rejected and gaps are shown as gaps, never as zero.", "done"),
     ("Alarm limits", "Normal, warning and critical limits confirmed with the machine OEM / process team.", "open"),
 ]
@@ -605,11 +606,18 @@ async def data_quality(device_id: str, hours: float = Query(24, gt=0, le=24 * 7)
     def pct(p):
         return diffs[min(len(diffs) - 1, int(len(diffs) * p))] if diffs else None
 
-    pauses = [g for g in diffs if g >= 500]  # gaps between bursts
+    # Delivery pattern from arrival times (raw messages): stored records carry their poll time, so a
+    # bursting gateway (e.g. 10 messages every 5 s) no longer shows in the record intervals.
+    arrivals = [r["t"] for r in await db.pool().fetch(
+        "SELECT extract(epoch FROM ts) AS t FROM raw_messages WHERE device_id = $1 AND status = 'ok' "
+        "AND ts >= to_timestamp($2) AND ts < to_timestamp($3) ORDER BY ts", device_id, stop - 900, stop,
+    )]
+    arrival_gaps = sorted((float(b) - float(a)) * 1000 for a, b in zip(arrivals, arrivals[1:]))
+    pauses = [g for g in arrival_gaps if g >= 500]  # gaps between bursts
     burst = None
-    if pauses and len(pauses) < len(diffs) * 0.5:  # most gaps are tiny: the gateway sends in bursts
+    if pauses and len(pauses) < len(arrival_gaps) * 0.5:  # most gaps are tiny: the gateway sends in bursts
         period_ms = pauses[len(pauses) // 2]
-        burst = {"period_s": period_ms / 1000, "records": round(len(recent) / (len(pauses) + 1), 1)}
+        burst = {"period_s": period_ms / 1000, "messages": round(len(arrivals) / (len(pauses) + 1), 1)}
 
     events = [e for e in an.comms_events(segs, stop, min_s=asset["gap_s"]) if first is not None and e["start"] >= first]
     for e in events:

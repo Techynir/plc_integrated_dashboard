@@ -520,6 +520,17 @@ async def history(
     return await query_history(db.pool(), device_id, parse_tags(tags), start, end)
 
 
+async def export_gap(device_id: str) -> tuple[float, float]:
+    """(poll interval, silence that counts as lost communication) in seconds, as in the asset analytics."""
+    row = await db.pool().fetchrow("SELECT expected_interval_s, asset_config FROM devices WHERE device_id = $1", device_id)
+    if row is None:
+        raise HTTPException(404, "Device not found")
+    cfg = row["asset_config"] or {}
+    poll_ms, timeout = cfg.get("poll_interval_ms"), cfg.get("comms_timeout_s")
+    interval = poll_ms / 1000.0 if isinstance(poll_ms, (int, float)) and poll_ms > 0 else float(row["expected_interval_s"] or 1.0)
+    return interval, max(3 * interval, float(timeout) if isinstance(timeout, (int, float)) and timeout > 0 else 15.0)
+
+
 @router.get("/{device_id}/export.csv")
 async def export_csv(
     device_id: str,
@@ -532,10 +543,13 @@ async def export_csv(
     tag_list = parse_tags(tags)
     await db.audit(user.email, "export.csv", device_id, {"tags": tag_list, "from": str(start), "to": str(end)})
 
+    interval_s, gap_s = await export_gap(device_id)
+
     async def rows() -> AsyncIterator[str]:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["ts", "device_id", "tag", "value", "quality"])
+        writer.writerow(["ts", "device_id", "tag", "value", "quality", "note"])
+        last: dict[str, dt.datetime] = {}
         async with db.pool().acquire() as conn, conn.transaction():
             cursor = conn.cursor(
                 "SELECT ts, tag, value_num, value_text, quality FROM telemetry "
@@ -544,8 +558,16 @@ async def export_csv(
             )
             n = 0
             async for r in cursor:
+                prev = last.get(r["tag"])
+                if prev is not None and (r["ts"] - prev).total_seconds() > gap_s:
+                    # one marker per gap, so "no data" is not mistaken for data that was never expected
+                    missing = (r["ts"] - prev).total_seconds() - interval_s
+                    writer.writerow([(prev + dt.timedelta(seconds=interval_s)).isoformat(), device_id, r["tag"], "",
+                                     "COMMS_LOST", f"no data for {missing:.0f} s"])
+                last[r["tag"]] = r["ts"]
                 value = r["value_text"] if r["value_text"] is not None else r["value_num"]
-                writer.writerow([r["ts"].isoformat(), device_id, r["tag"], value, QUALITY.get(r["quality"], "")])
+                note = "bad read rejected, not used" if r["quality"] == 2 else ""
+                writer.writerow([r["ts"].isoformat(), device_id, r["tag"], value, QUALITY.get(r["quality"], ""), note])
                 n += 1
                 if n % 1000 == 0:
                     yield buf.getvalue()

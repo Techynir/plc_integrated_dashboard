@@ -14,6 +14,7 @@ import asyncpg
 import httpx
 
 from .alarms import RESTART_GRACE_S, AlarmEngine, Transition, format_message
+from .bursts import BurstSpacer, Held, block_key
 from .parsing import (
     InvalidMessage,
     TagConfig,
@@ -36,6 +37,7 @@ FLUSH_INTERVAL_S = 0.5
 FLUSH_MAX_ROWS = 1000
 MAX_BUFFERED_ROWS = 200_000  # back-pressure guard while the database is unavailable
 HOUSEKEEPING_INTERVAL_S = 5
+BURST_CHECK_INTERVAL_S = 0.1
 STATS_INTERVAL_S = 10
 CONFIG_RELOAD_INTERVAL_S = 60
 
@@ -82,6 +84,8 @@ class Ingestor:
         self.register_maps: dict[str, dict] = {}  # device -> {address: RegisterDef}
         self.status_tags: dict[str, str] = {}  # device -> tag whose label drives the status
         self.config_changed = asyncio.Event()
+        self.spacer = BurstSpacer()
+        self.processing = asyncio.Lock()  # bursts are released from a timer as well as the MQTT loop
         self.http = httpx.AsyncClient(timeout=5)
         self._background: set[asyncio.Task] = set()
 
@@ -105,7 +109,9 @@ class Ingestor:
         await listener.add_listener("config_changed", lambda *_: self.config_changed.set())
         await self.reload_config()
         log.info("loaded %d devices, %d tags, %d alarm rules", len(self.devices), len(self.tag_cfg), len(self.engine.rules))
-        await asyncio.gather(self.mqtt_loop(), self.flush_loop(), self.housekeeping_loop(), self.config_loop())
+        await asyncio.gather(
+            self.mqtt_loop(), self.flush_loop(), self.housekeeping_loop(), self.config_loop(), self.burst_loop()
+        )
 
     async def _connect_db(self) -> asyncpg.Pool:
         while True:
@@ -121,6 +127,7 @@ class Ingestor:
             current = self.devices.get(device_id)
             if current:  # keep live runtime state, refresh admin-controlled fields
                 current.expected_interval_s = state.expected_interval_s
+                current.poll_s = state.poll_s
                 current.enabled = state.enabled
                 current.simulated = state.simulated
             else:
@@ -188,10 +195,39 @@ class Ingestor:
         topic = parse_topic(topic_str)
         if topic is None:
             return
-        if topic.kind == "status":
-            await self.handle_status(topic, payload)
-        else:
-            await self.handle_telemetry(topic_str, topic, payload)
+        async with self.processing:
+            await self._release_bursts(utcnow())  # keep arrival order if the timer has not run yet
+            if topic.kind == "status":
+                await self.handle_status(topic, payload)
+                return
+            block = block_key(payload)
+            if block is None:
+                await self.handle_telemetry(topic_str, topic, payload)
+            else:
+                self.spacer.add(Held(topic_str, topic, payload, utcnow(), block))
+
+    async def release_bursts(self, now: dt.datetime, force: bool = False) -> None:
+        async with self.processing:
+            await self._release_bursts(now, force)
+
+    async def _release_bursts(self, now: dt.datetime, force: bool = False) -> None:
+        if not self.spacer.pending:
+            return
+        poll_s = {d: s.poll_s for d, s in self.devices.items()}
+        for burst in self.spacer.due(now, poll_s, force):
+            await self.process_burst(burst)
+
+    async def process_burst(self, burst: list) -> None:
+        for held, ts in burst:
+            await self.handle_telemetry(held.topic_str, held.topic, held.payload, held.received_at, ts)
+
+    async def burst_loop(self) -> None:
+        while True:
+            await asyncio.sleep(BURST_CHECK_INTERVAL_S)
+            try:
+                await self.release_bursts(utcnow())
+            except Exception:
+                log.exception("burst release failed")
 
     async def handle_status(self, topic: Topic, payload: bytes) -> None:
         online = decode_status(payload)
@@ -202,8 +238,14 @@ class Ingestor:
         elif online is False and dev is not None and dev.online:
             await self.mark_offline(dev, reason="last will")
 
-    async def handle_telemetry(self, topic_str: str, topic: Topic, payload: bytes) -> None:
-        received_at = utcnow()
+    async def handle_telemetry(
+        self, topic_str: str, topic: Topic, payload: bytes,
+        received_at: dt.datetime | None = None, polled_at: dt.datetime | None = None,
+    ) -> None:
+        """received_at: arrival (raw data, liveness). polled_at: the poll time of a message from a
+        bursting gateway (see bursts.py), used as the record time instead of the arrival."""
+        received_at = received_at or utcnow()
+        stamp = polled_at or received_at
         self.stats["received"] += 1
 
         def keep_raw(status: str, detail: str = "") -> None:
@@ -212,7 +254,7 @@ class Ingestor:
 
         try:
             msg = decode_telemetry(
-                topic, payload, received_at, self.validator, self.register_maps.get(topic.device_id)
+                topic, payload, stamp, self.validator, self.register_maps.get(topic.device_id)
             )
         except InvalidMessage as exc:
             self.stats["invalid"] += 1
@@ -265,10 +307,10 @@ class Ingestor:
         was_offline = not dev.online
         dev.online, dev.last_seen = True, received_at
         if msg.status == "RUN" and dev.status != "RUN":
-            dev.run_since = received_at  # restart: process alarms stay held off for a grace period
+            dev.run_since = stamp  # restart: process alarms stay held off for a grace period
         dev.status = msg.status or dev.status
         inhibited = dev.status is not None and dev.status != "RUN" or (
-            dev.run_since is not None and (received_at - dev.run_since).total_seconds() < RESTART_GRACE_S
+            dev.run_since is not None and (stamp - dev.run_since).total_seconds() < RESTART_GRACE_S
         )
 
         await self.publish(
@@ -283,7 +325,7 @@ class Ingestor:
             },
         )
         transitions = self.engine.on_readings(
-            msg.device_id, readings, msg.status, received_at.timestamp(), inhibited
+            msg.device_id, readings, msg.status, stamp.timestamp(), inhibited
         )
         if was_offline:
             await self.publish_status(dev)

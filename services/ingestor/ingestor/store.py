@@ -20,6 +20,7 @@ class DeviceState:
     status: str | None
     simulated: bool = False
     run_since: dt.datetime | None = None  # when the machine last went to RUN (restart grace)
+    poll_s: float = 1.0  # gateway poll interval (asset_config.poll_interval_ms), spaces bursts
 
     @property
     def offline_after_s(self) -> float:
@@ -50,9 +51,18 @@ class Store:
 
     async def load_devices(self) -> dict[str, DeviceState]:
         rows = await self.pool.fetch(
-            "SELECT device_id, expected_interval_s, enabled, online, last_seen, status, simulated FROM devices"
+            "SELECT device_id, expected_interval_s, enabled, online, last_seen, status, simulated, "
+            "asset_config->'poll_interval_ms' AS poll_ms FROM devices"
         )
-        return {r["device_id"]: DeviceState(**dict(r)) for r in rows}
+        out = {}
+        for r in rows:
+            row = dict(r)
+            raw = row.pop("poll_ms")
+            poll_ms = json.loads(raw) if raw is not None else None
+            row["poll_s"] = (poll_ms / 1000.0 if isinstance(poll_ms, (int, float)) and poll_ms > 0
+                             else float(row["expected_interval_s"] or 1.0))
+            out[r["device_id"]] = DeviceState(**row)
+        return out
 
     async def load_tag_configs(self) -> dict[tuple[str, str], TagConfig]:
         rows = await self.pool.fetch(

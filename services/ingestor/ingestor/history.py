@@ -6,10 +6,18 @@
 
 Three layers, so the result is indistinguishable from real data:
 
-1. PLC program: a line-by-line port of the "PM-01 Demo Data: Simple PLC Guide" Step 5 program
-   (its RND function, noise, linked values, 8-9 random stops a day, 4-5 problem events a day per
-   driver via FB_EVENT). One addition: the bearing slowly wears (vibration baseline drifts up by
-   WEAR_PER_DAY), so Asset health has a trend to show.
+1. PLC program: a port of the "PM-01 Demo Data: Simple PLC Guide" Step 5 program (its RND
+   function, noise, linked values, about 8 stops a day, problem events per driver via FB_EVENT),
+   made less regular after a review of the generated data:
+   - problem events come 1-9 h apart (not 4-6 h), each with its own ramp rate and length;
+   - the bearing wears unevenly: a rate that grows over time plus day-to-day variation;
+   - a worn or vibrating bearing adds friction: +1.5 A per mm/s above normal, at full speed;
+   - moisture is noisier and over-dries for a few minutes after steam pressure recovers;
+   - at standstill the vibration sensor reads a drifting noise floor (0.1-0.35 mm/s);
+   - some stops are caused by the process: a sustained wet sheet can break, and a critical
+     overload can trip the drive (about 1-2 a day); the rest stay random.
+   The guide's RND stream drives what the guide specifies; the additions use their own random
+   generator, so the guide's stop pattern is unchanged by them.
 2. Gateway: polls the registers once a second and publishes the two Modbus blocks exactly like the
    real gateway (topic plc/<site>/<line>/<device>/telemetry, {"PM3032_DATA":[...]} with float32
    values printed as "%.6f"), delivered in bursts every 5 s. On top: communication outages
@@ -38,13 +46,18 @@ from dataclasses import dataclass, field
 import asyncpg
 
 from . import main as live
+from .bursts import QUIET_S
 from .main import Ingestor
 from .store import Store
 
 POLL_S = 1.0  # PLC task and gateway poll interval
 BURST_S = 5  # the gateway delivers its buffered polls every 5 s
 WARMUP_S = 6 * 3600  # run the PLC before the window so stops/events are mid-cycle at the start
-WEAR_PER_DAY = 0.03  # mm/s per day added to the vibration baseline (bearing wear)
+VIB_NEW = 3.0  # mm/s, vibration baseline of the bearing at the start of the window
+WEAR_RATE = 0.015  # mm/s per day at the start of the window ...
+WEAR_GROWTH = 0.0025  # ... growing by this much per day (wear accelerates)
+WEAR_WOBBLE = 0.03  # mm/s, day-to-day variation of the baseline (lubrication, temperature, load)
+FRICTION_A_PER_MMS = 1.5  # A of extra drive current per mm/s of vibration above VIB_NEW, at full speed
 GATEWAY_IP = "192.168.18.2"
 
 
@@ -63,15 +76,19 @@ class Rnd:
 
 
 class FbEvent:
-    """FUNCTION_BLOCK FB_EVENT: wait 4-6 h, move to the warning value (critical 1 in 5) for
-    3-10 min, move back; values move smoothly (1/40 of the distance per second)."""
+    """FUNCTION_BLOCK FB_EVENT: wait, move to the warning value (critical 1 in 5), hold, move back.
+    The guide waits 4-6 h, holds 3-10 min and always moves 1/40 of the distance per second; here
+    the wait is 1-9 h and every event draws its own hold (2-15 min) and ramp rate (1/15-1/90)."""
 
-    WAIT = (14400.0, 7200.0)
-    LENGTH = (180.0, 420.0)
+    WAIT = (3600.0, 28800.0)
+    LENGTH = (120.0, 780.0)
+    RAMP = (15.0, 90.0)  # seconds-scale of the move: value += distance / ramp each second
 
-    def __init__(self, normal: float, warning: float, critical: float) -> None:
+    def __init__(self, normal: float, warning: float, critical: float, shape: random.Random | None = None) -> None:
         self.normal, self.warning, self.critical = normal, warning, critical
         self.stage, self.countdown, self.target, self.value, self.started = 0, 0.0, normal, normal, False
+        self.shape = shape or random.Random(0)
+        self.ramp = 40.0
         self.events: list[tuple[str, float]] = []  # ("warning"|"critical", start second) for summaries
 
     def __call__(self, running: bool, rnd: Rnd, t: float = 0.0, normal: float | None = None) -> float:
@@ -89,13 +106,22 @@ class FbEvent:
                 self.target = self.critical if critical else self.warning
                 self.events.append(("critical" if critical else "warning", t))
                 self.countdown = self.LENGTH[0] + rnd() * self.LENGTH[1]
+                self.ramp = self.shape.uniform(*self.RAMP)
                 self.stage = 1
         elif self.countdown <= 0.0:
             self.target = self.normal
             self.countdown = self.WAIT[0] + rnd() * self.WAIT[1]
             self.stage = 0
-        self.value += (self.target - self.value) / 40.0
+        self.value += (self.target - self.value) / self.ramp
         return self.value
+
+    @property
+    def active(self) -> bool:
+        return self.stage == 1
+
+    @property
+    def is_critical(self) -> bool:
+        return self.stage == 1 and self.target == self.critical
 
 
 @dataclass
@@ -111,17 +137,34 @@ class Registers:
 class PM01:
     """PROGRAM PM01_DEMO, executed once per second."""
 
+    TIMER_STRETCH = 1.25  # random stops a bit rarer, so process trips keep the total near 8 a day
+    WET_TRIP = (7.3, 45.0, 0.3)  # moisture %, sustained seconds, chance that such an episode breaks the sheet
+    OVERLOAD_TRIP = (60.0, 0.6)  # seconds into a critical overload, chance that the drive trips
+    TRIP_HOLDOFF_S = 300.0  # no process trip in the first minutes after a restart (threading)
+
     def __init__(self, seed: int = 12345) -> None:
         self.rnd = Rnd(seed)
+        self.extra = random.Random(seed * 31 + 7)  # randomness beyond the guide (see module doc)
         self.running, self.on_reel = True, True
         self.time_to_stop, self.stop_length = 5400.0, 0.0
-        self.ev_speed = FbEvent(276.5, 255.0, 235.0)
-        self.ev_steam = FbEvent(4.17, 3.40, 3.00)
-        self.ev_current = FbEvent(0.0, 20.0, 30.0)
-        self.ev_vibration = FbEvent(3.05, 4.8, 5.8)
-        self.speed_now, self.moisture_slow = 276.5, 6.14
+        self.ev_speed = FbEvent(276.5, 255.0, 235.0, random.Random(seed + 1))
+        self.ev_steam = FbEvent(4.17, 3.40, 3.00, random.Random(seed + 2))
+        self.ev_current = FbEvent(0.0, 20.0, 30.0, random.Random(seed + 3))
+        self.ev_vibration = FbEvent(3.05, 4.8, 5.8, random.Random(seed + 4))
+        self.speed_now, self.moisture_slow, self.pressure_slow = 276.5, 6.14, 4.17
         self.n_speed = self.n_current = self.n_pressure = self.n_moisture = self.n_vib = 0.0
+        self.n_moisture_extra, self.n_floor = 0.0, 0.5  # extra moisture noise, standstill floor (0-1)
+        self.run_s = 1e9  # seconds since the last restart
+        self.wet_s = self.overload_s = 0.0
+        self.wet_decided = self.overload_decided = False
         self.stops: list[float] = []  # start second of each stop
+        self.causes: list[str] = []  # "random", "wet sheet break" or "drive overload trip", per stop
+
+    def trip(self, t: float, cause: str) -> None:
+        self.running = False
+        self.stop_length = 300.0 + self.extra.random() * 1200.0
+        self.stops.append(t)
+        self.causes.append(cause)
 
     def step(self, t: float, vib_normal: float = 3.05) -> Registers:
         rnd = self.rnd
@@ -131,6 +174,9 @@ class PM01:
         self.n_pressure = 0.8 * self.n_pressure + (rnd() - 0.5) * 0.025
         self.n_moisture = 0.8 * self.n_moisture + (rnd() - 0.5) * 0.05
         self.n_vib = 0.8 * self.n_vib + (rnd() - 0.5) * 0.07
+        extra = self.extra
+        self.n_moisture_extra = 0.85 * self.n_moisture_extra + (extra.random() - 0.5) * 0.09
+        self.n_floor = min(1.0, max(0.0, self.n_floor + (extra.random() - 0.5) * 0.04))
         # 2. stops (Step 3)
         if self.running:
             self.time_to_stop -= 1.0
@@ -138,11 +184,13 @@ class PM01:
                 self.running = False
                 self.stop_length = 300.0 + rnd() * 1200.0
                 self.stops.append(t)
+                self.causes.append("random")
         else:
             self.stop_length -= 1.0
             if self.stop_length <= 0.0:
                 self.running = True
-                self.time_to_stop = 4200.0 + rnd() * 10200.0
+                self.run_s = 0.0
+                self.time_to_stop = (4200.0 + rnd() * 10200.0) * self.TIMER_STRETCH
         # 3. problem events (Step 4)
         ev_speed = self.ev_speed(self.running, rnd, t)
         ev_steam = self.ev_steam(self.running, rnd, t)
@@ -163,14 +211,41 @@ class PM01:
         elif speed > 270.0:
             self.on_reel = True
         # 6. linked values (Step 2)
-        current = 11.0 + 0.458 * speed + ev_current + self.n_current
+        friction = FRICTION_A_PER_MMS * max(0.0, ev_vib - VIB_NEW) * speed / 276.5
+        # load events are drag on the moving machine: none at standstill (e.g. after an overload trip)
+        current = 11.0 + 0.458 * speed + ev_current * min(1.0, speed / 276.5) + friction + self.n_current
         pressure = ev_steam + self.n_pressure
-        vibration = max(0.2, ev_vib * speed / 276.5 + self.n_vib)
+        floor = 0.1 + 0.25 * self.n_floor  # sensor noise floor at standstill
+        vibration = max(floor, ev_vib * speed / 276.5 + self.n_vib)
+        # the cylinders heat up again more slowly than the steam pressure returns: right after a
+        # recovery the sheet over-dries for a few minutes
+        self.pressure_slow += (pressure - self.pressure_slow) / 180.0
+        overdry = 0.5 * max(0.0, pressure - self.pressure_slow)
         if self.on_reel:
-            target_m = 6.14 + 1.6 * (4.17 - pressure)
+            target_m = 6.14 + 1.6 * (4.17 - pressure) - overdry
             self.moisture_slow += (target_m - self.moisture_slow) / 60.0
-        moisture = self.moisture_slow + self.n_moisture
-        # 7. status
+        moisture = self.moisture_slow + self.n_moisture + self.n_moisture_extra
+        # 7. process trips: a wet sheet breaks, an overloaded drive trips (each episode decided once)
+        if self.running:
+            self.run_s += 1.0
+            wet_pct, wet_hold, wet_p = self.WET_TRIP
+            self.wet_s = self.wet_s + 1.0 if self.on_reel and moisture > wet_pct else 0.0
+            if self.wet_s == 0.0:
+                self.wet_decided = False
+            ovl_hold, ovl_p = self.OVERLOAD_TRIP
+            self.overload_s = self.overload_s + 1.0 if self.ev_current.is_critical else 0.0
+            if self.overload_s == 0.0:
+                self.overload_decided = False
+            if self.run_s >= self.TRIP_HOLDOFF_S:
+                if self.wet_s >= wet_hold and not self.wet_decided:
+                    self.wet_decided = True
+                    if self.extra.random() < wet_p:
+                        self.trip(t, "wet sheet break")
+                elif self.overload_s >= ovl_hold and not self.overload_decided:
+                    self.overload_decided = True
+                    if self.extra.random() < ovl_p:
+                        self.trip(t, "drive overload trip")
+        # 8. status
         return Registers(1 if self.on_reel else 0, speed, current, pressure, moisture, vibration)
 
 
@@ -242,19 +317,31 @@ class Message:
     payload: bytes
 
 
+def vibration_baseline(s: float, day_offsets: list[float]) -> float:
+    """Bearing condition at second s of the window: accelerating wear plus a day-to-day variation
+    that changes smoothly (interpolated between daily values, so no jumps at midnight)."""
+    d = s / 86400
+    i = int(d)
+    wobble = day_offsets[i] + (day_offsets[i + 1] - day_offsets[i]) * (d - i)
+    return VIB_NEW + WEAR_RATE * d + WEAR_GROWTH * d * d + wobble
+
+
 def generate(start: float, total_s: int, seed: int, scenario: Scenario):
     """Yield gateway messages for [start, start + total_s) in arrival order, plus stats at the end."""
     plc = PM01(seed)
     for w in range(WARMUP_S):  # settle the PLC before the window
-        plc.step(w - WARMUP_S, vib_normal=3.0)
+        plc.step(w - WARMUP_S, vib_normal=VIB_NEW)
     plc.stops.clear()
+    plc.causes.clear()
     for ev in (plc.ev_speed, plc.ev_steam, plc.ev_current, plc.ev_vibration):
         ev.events.clear()
     jitter = random.Random(seed + 7)
+    wobble = random.Random(seed + 13)
+    day_offsets = [wobble.gauss(0.0, WEAR_WOBBLE) for _ in range(total_s // 86400 + 2)]
     buffer: list[tuple[int, Registers]] = []
     stats = {"polls": 0, "lost_polls": 0, "messages": 0}
     for s in range(total_s):
-        regs = plc.step(s, vib_normal=3.0 + WEAR_PER_DAY * s / 86400)
+        regs = plc.step(s, vib_normal=vibration_baseline(s, day_offsets))
         if scenario.offline(s):
             stats["lost_polls"] += 1  # no reply from the gateway: the poll is lost, not delayed
         else:
@@ -289,6 +376,7 @@ def generate(start: float, total_s: int, seed: int, scenario: Scenario):
                 stats["messages"] += 2
             buffer.clear()
     stats["stops"] = len(plc.stops)
+    stats["stop_causes"] = {c: plc.causes.count(c) for c in sorted(set(plc.causes))}
     stats["events"] = {
         name: {k: sum(1 for kind, _ in ev.events if kind == k) for k in ("warning", "critical")}
         for name, ev in (("speed", plc.ev_speed), ("steam", plc.ev_steam), ("current", plc.ev_current),
@@ -344,6 +432,15 @@ class Replay(Ingestor):
         super().__init__()
         self.now = dt.datetime.now(dt.timezone.utc)
         live.utcnow = lambda: self.now  # the live handler stamps messages with this clock
+
+    async def process_burst(self, burst: list) -> None:
+        """Live, a burst is released QUIET_S after its last message; alarms raised then carry that time."""
+        now = self.now
+        self.now = burst[-1][0].received_at + dt.timedelta(seconds=QUIET_S)
+        try:
+            await super().process_burst(burst)
+        finally:
+            self.now = now
 
     async def housekeeping(self) -> None:
         """One pass of Ingestor.housekeeping_loop at the replay time (offline detection)."""
@@ -421,14 +518,16 @@ async def run(args: argparse.Namespace) -> None:
             break
         while next_housekeeping <= item.received_at:  # the live loop runs every 5 s
             replay.now = dt.datetime.fromtimestamp(next_housekeeping, dt.timezone.utc)
+            await replay.release_bursts(replay.now)
             await replay.housekeeping()
             next_housekeeping += live.HOUSEKEEPING_INTERVAL_S
         replay.now = dt.datetime.fromtimestamp(item.received_at, dt.timezone.utc)
-        await replay.handle(topic, item.payload)
+        await replay.handle(topic, item.payload)  # releases earlier bursts, then holds this message
         if time.monotonic() - last_report > 15:
             last_report = time.monotonic()
             done = (item.received_at - start.timestamp()) / total_s
             print(f"  {done:6.1%}  {replay.now:%m-%d %H:%M}  {replay.stats['received']:,} messages", flush=True)
+    await replay.release_bursts(replay.now, force=True)
     await replay.flush()
 
     print("rebuilding 1-minute and 1-hour rollups")

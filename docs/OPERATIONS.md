@@ -220,9 +220,12 @@ What the week contains:
 | Scenario | Source |
 |---|---|
 | Sensor noise, linked values (current and vibration follow speed; moisture follows steam about a minute later) | Guide, Steps 1–2 |
-| 8–9 stops a day: status 0, speed ramps down and up at 3 m/min per second | Guide, Step 3 |
-| 4–5 problem events a day each for speed, steam (and so moisture), motor current and vibration; about 1 in 5 reaches the critical value | Guide, Step 4 |
-| Bearing wear: vibration baseline rises 0.03 mm/s a day | Generator only (gives Asset health a trend) |
+| About 8 stops a day: status 0, speed ramps down and up at 3 m/min per second. Most come at random (guide); about 1–2 a day are caused by the process: a wet sheet (moisture above 7.3 % for 45 s) can break, a critical overload can trip the drive | Guide, Step 3, plus generator |
+| Problem events for speed, steam (and so moisture), motor current and vibration, 1–9 h apart (so 2–7 a day), each with its own ramp rate and length (2–15 min); about 1 in 5 reaches the critical value | Guide, Step 4, made irregular |
+| Bearing wear: vibration baseline rises at an accelerating rate (about 0.23 mm/s over the week) with day-to-day variation of ±0.03 mm/s | Generator only (gives Asset health a trend) |
+| A vibrating or worn bearing adds friction: +1.5 A per mm/s above normal at full speed; load events act only while the machine moves | Generator only |
+| Moisture noise about ±0.1 %; the sheet over-dries for a few minutes after steam pressure recovers | Generator only |
+| At standstill, vibration reads a drifting sensor noise floor (0.1–0.35 mm/s), never one fixed value | Generator only |
 | Communication lost: 2–4 short drops a day (some longer than the 60 s offline alarm), one ~35 min gateway reboot, one ~2 h network failure | Generator only (gateway / network) |
 | Bad reads: negative current, garbage speed float, unknown status code (65535), `nan` in the data | Generator only (gateway) |
 
@@ -235,6 +238,8 @@ docker compose run --rm --no-deps -e HISTORY_CONFIRM=1 ingestor \
   python -m ingestor.history conveyer-plc-line-01 --days 7 --replace   # --dry-run to preview
 docker compose start ingestor
 ```
+
+Not modelled yet (parked, see [OPEN_POINTS.md](OPEN_POINTS.md) item 4): speed affecting moisture and steam, dryer flooding, sheet-break signatures and roll resonance.
 
 `--replace` deletes the device's stored values, raw messages, alarms, stop reasons and ingest errors inside the window first. The same `--seed` (default 12345, the guide's start number) always gives the same week. A run takes about 3 minutes on a laptop. Raw messages older than 7 days are removed by the normal retention, so the Raw data tab's history shortens day by day.
 
