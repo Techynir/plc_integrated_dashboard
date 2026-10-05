@@ -190,14 +190,8 @@ export function Layout({ children }: { children: ReactNode }) {
         <button className="small mobile-bar" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu" aria-expanded={menuOpen}>
           ☰
         </button>
-        <NavLink to={"/" + assetQs} className="brand">
-          <img src="/favicon.svg" alt="" width={26} height={26} />
-          <b>PLC Console</b>
-          <span>
-            Paper machine
-            <br />
-            monitoring
-          </span>
+        <NavLink to={"/" + assetQs} className="brand" aria-label="Numerique">
+          <img className="logo" src="/Numerique2.png" alt="Numerique" />
         </NavLink>
         <AssetSelect />
         <LinkPill />
@@ -216,7 +210,6 @@ export function Layout({ children }: { children: ReactNode }) {
         <nav className="navgrp" aria-label="Operations">
           <h4>Operations</h4>
           {link("/", "Plant overview")}
-          {link("/live", "Live view")}
           {link("/trends", "Trends & historian")}
           {link(
             "/alarms",

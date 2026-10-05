@@ -67,10 +67,16 @@ export function Performance() {
             <Tile k="Stops" v={p.stops.length} s={`${fmtDur(p.totals.stop)} total`} />
             <Tile k="Longest stop" v={p.longest_stop_s ? fmtDur(p.longest_stop_s) : "—"} />
             <Tile
-              k="Avg speed · running"
-              v={fmtNum(p.avg_speed_running, 1)}
-              unit={p.speed_tag?.unit}
-              s={target ? `target ${fmtNum(target, 1)} · ${p.avg_speed_running ? ((p.avg_speed_running / target) * 100).toFixed(1) : "—"} % of target` : "no speed target set"}
+              k="Performance"
+              v={p.performance != null ? (p.performance * 100).toFixed(1) : "—"}
+              unit="%"
+              s={
+                p.rated_actual.length
+                  ? `actual vs rated · ${p.rated_actual.map((r) => `${r.label} ${fmtNum(r.actual, 1)} / ${fmtNum(r.rated, 1)}`).join(" · ")}`
+                  : target
+                    ? `avg speed ${fmtNum(p.avg_speed_running, 1)} · rated ${fmtNum(target, 1)}`
+                    : "no rated values set"
+              }
             />
             <Tile k="No PLC link" v={fmtDur(p.totals.comms)} s="excluded from availability" />
           </div>

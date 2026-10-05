@@ -229,7 +229,32 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
     speed_run = an.in_states(await series(device_id, speed_tag and speed_tag["tag"], start, stop), segs, {"run"})
     moist_run = an.in_states(await series(device_id, moist_tag and moist_tag["tag"], start, stop), segs, {"run"})
     avg_speed = an.mean([v for _, v in speed_run])
-    target = (asset["asset_config"] or {}).get("speed_target")
+    cfg = asset["asset_config"] or {}
+    target = cfg.get("speed_target")
+    rated_by_tag = {
+        k: float(v) for k, v in (cfg.get("rated") or {}).items() if isinstance(v, (int, float)) and float(v) != 0
+    }
+    if speed_tag and isinstance(target, (int, float)) and float(target) != 0:
+        rated_by_tag.setdefault(speed_tag["tag"], float(target))
+    rated_actual = []
+    for name, rated in rated_by_tag.items():
+        spec = asset["tags"].get(name)
+        if not spec or spec.get("data_type") != "number" or spec.get("role") == "machine_status":
+            continue
+        if speed_tag and name == speed_tag["tag"]:
+            actual = avg_speed
+        else:
+            pts = an.in_states(await series(device_id, name, start, stop), segs, {"run"})
+            actual = an.mean([v for _, v in pts])
+        if actual is None:
+            continue
+        # 1 when actual equals rated; the same gap above or below rated scores the same.
+        ratio = min(actual / rated, rated / actual)
+        rated_actual.append({
+            "tag": name, "label": spec["label"], "unit": spec["unit"] or "",
+            "actual": actual, "rated": rated, "ratio": ratio,
+        })
+    performance = an.mean([c["ratio"] for c in rated_actual])
 
     # shifts
     pieces = an.split_segments(segs, an.shift_boundaries(start, stop, zone))
@@ -274,6 +299,8 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
         "longest_stop_s": max((s["seconds"] for s in stops), default=None),
         "avg_speed_running": avg_speed,
         "speed_target": target,
+        "performance": performance,
+        "rated_actual": rated_actual,
         "speed_tag": tag_public(speed_tag),
         "segments": [{"state": s.state, "start": s.start, "end": s.end} for s in segs],
         "shifts": shift_rows,

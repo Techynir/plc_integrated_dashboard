@@ -1,11 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alarm, api, qs } from "../../api";
+import { useDevice } from "../../assetApi";
 import { useAuth } from "../../auth";
-import { useAsset } from "../../hooks";
-import { Chip, fmtDT, fmtDur, fmtNum, Panel, ScreenHead, Tile } from "../../components/console";
+import { formatValue } from "../../format";
+import { mergeLive, useAsset } from "../../hooks";
+import { useLiveDevice } from "../../live";
+import { Chip, fmtDT, fmtDur, fmtNum, Panel, ScreenHead, tagFault, Tile } from "../../components/console";
 import { HourBars } from "../../components/charts";
 import { ErrorText, Loading, useNow } from "../../components/ui";
+import { orderTags } from "./Live";
 
 interface AlarmSummary {
   active_critical: number;
@@ -38,7 +43,7 @@ function AckButton({ a }: { a: Alarm }) {
 }
 
 /** Active alarms: unacknowledged rows carry a coloured left edge; guidance (context) under the message. */
-export function AlarmTable({ alarms, compact = false, showDevice = false }: { alarms: Alarm[]; compact?: boolean; showDevice?: boolean }) {
+export function AlarmTable({ alarms, compact = false, showDevice = false, focusTag }: { alarms: Alarm[]; compact?: boolean; showDevice?: boolean; focusTag?: string | null }) {
   const { can } = useAuth();
   const now = useNow(5000);
   return (
@@ -56,7 +61,11 @@ export function AlarmTable({ alarms, compact = false, showDevice = false }: { al
         </thead>
         <tbody>
           {alarms.map((a) => (
-            <tr key={a.id} className={a.acked_at ? undefined : `unack${a.severity === "critical" ? "" : " w"}`}>
+            <tr
+              key={a.id}
+              id={a.tag ? `alarm-${a.tag}` : undefined}
+              className={[a.acked_at ? "" : `unack${a.severity === "critical" ? "" : " w"}`, focusTag && a.tag === focusTag ? "hit" : ""].filter(Boolean).join(" ") || undefined}
+            >
               <td>{sevChip(a)}</td>
               <td>
                 <div style={{ fontWeight: 600 }}>{a.message || a.rule_name}</div>
@@ -93,7 +102,11 @@ export function Alarms() {
   const { asset } = useAsset();
   const { can } = useAuth();
   const qc = useQueryClient();
+  const [params] = useSearchParams();
+  const focusTag = params.get("tag");
   const [scope, setScope] = useState<"asset" | "all">("asset");
+  const detail = useDevice(asset?.device_id);
+  const live = useLiveDevice(asset?.device_id);
   const deviceId = scope === "asset" ? asset?.device_id : undefined;
   const summary = useQuery({
     queryKey: ["alarms", "summary", deviceId],
@@ -112,6 +125,23 @@ export function Alarms() {
 
   const s = summary.data;
   const unackedActive = (active.data ?? []).filter((a) => !a.acked_at).length;
+  const device = detail.data;
+  const merged = device ? mergeLive(device, live) : null;
+  const comms = merged ? !merged.online : false;
+  const faults = (merged && device
+    ? orderTags((device.tags ?? []).filter((t) => t.data_type === "number" && t.role !== "machine_status")).flatMap((t) => {
+        const fault = tagFault(t, merged.value(t), { comms, bad: merged.quality(t) === 2 });
+        if (!fault) return [];
+        const v = merged.value(t);
+        return [{ tag: t.tag, ...fault, value: typeof v === "number" ? `${formatValue(v, t)}${t.unit ? ` ${t.unit}` : ""}` : "—", seen: merged.ts(t) ?? merged.lastSeen }];
+      })
+    : []);
+  const faultKey = faults.map((f) => f.tag).join(",");
+
+  useEffect(() => {
+    if (!focusTag) return;
+    document.getElementById(`fault-${focusTag}`)?.scrollIntoView({ block: "center" });
+  }, [focusTag, faultKey]);
   const hours = (() => {
     const out = new Map<number, number>();
     const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
@@ -160,7 +190,37 @@ export function Alarms() {
         </div>
       )}
       <Panel title="Active alarms" sub={`${active.data?.length ?? 0} active · newest first`}>
-        {active.data && active.data.length > 0 ? <AlarmTable alarms={active.data} showDevice={scope === "all"} /> : <div className="empty">No active alarms.</div>}
+        {faults.length > 0 && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Severity</th>
+                  <th>Error on plant overview</th>
+                  <th className="num">Value</th>
+                  <th>Seen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {faults.map((f) => (
+                  <tr key={f.tag} id={`fault-${f.tag}`} className={f.tag === focusTag ? "hit" : undefined}>
+                    <td><Chip cls={f.cls}>{f.label}</Chip></td>
+                    <td style={{ fontWeight: 600 }}>{f.text}</td>
+                    <td className="num">{f.value}</td>
+                    <td className="small nowrap">{fmtDT(f.seen)}</td>
+                    <td className="small muted">Live condition</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {active.data && active.data.length > 0 ? (
+          <AlarmTable alarms={active.data} showDevice={scope === "all"} focusTag={focusTag} />
+        ) : faults.length === 0 ? (
+          <div className="empty">No active alarms.</div>
+        ) : null}
       </Panel>
       <div className="grid g-7-5">
         <Panel title="Alarms raised per hour" sub="last 24 h">
@@ -202,7 +262,7 @@ export function Alarms() {
               </thead>
               <tbody>
                 {s.history.map((a) => (
-                  <tr key={a.id}>
+                  <tr key={a.id} className={focusTag && a.tag === focusTag ? "hit" : undefined}>
                     <td className="small nowrap">{fmtDT(a.raised_at)}</td>
                     <td>{sevChip(a)}</td>
                     <td>{a.message || a.rule_name}</td>

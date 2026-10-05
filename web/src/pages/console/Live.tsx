@@ -7,8 +7,8 @@ import { useAuth } from "../../auth";
 import { mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
 import { useLiveDevice } from "../../live";
 import { formatValue } from "../../format";
-import { Chip, fmtDT, fmtDur, fmtNum, fmtT, limitText, normalText, Panel, RangeBar, ScreenHead, tagState } from "../../components/console";
-import { Lane, Lanes, Sparkline } from "../../components/charts";
+import { Chip, fmtDT, fmtDur, fmtNum, fmtT, Panel, ScreenHead, tagFault } from "../../components/console";
+import { Lane, Lanes } from "../../components/charts";
 import { Loading, useNow } from "../../components/ui";
 
 export const ROLE_ORDER = ["machine_status", "speed", "motor_current", "steam_pressure", "moisture", "vibration"];
@@ -43,38 +43,7 @@ export function lanesFor(
   }));
 }
 
-function RawRecord({ deviceId }: { deviceId: string }) {
-  const { can } = useAuth();
-  const raw = useQuery({
-    queryKey: ["raw", deviceId, "latest"],
-    queryFn: () => api<{ ts: string; topic: string; payload: string }[]>(`/raw-messages${qs({ device_id: deviceId, status: "ok", limit: 1 })}`),
-    refetchInterval: 5000,
-  });
-  const r = raw.data?.[0];
-  let pretty = r?.payload ?? "";
-  try {
-    pretty = JSON.stringify(JSON.parse(pretty), null, 2);
-  } catch {
-    /* show as received */
-  }
-  return (
-    <Panel
-      title="Latest stored record"
-      sub={r ? `Exactly what the gateway sent · ${fmtDT(r.ts)}` : "none in the last 7 days"}
-      actions={
-        can("admin") && (
-          <Link className="btn small" to={`/raw?device=${encodeURIComponent(deviceId)}`}>
-            All raw data
-          </Link>
-        )
-      }
-    >
-      {r ? <pre className="jsonbox" style={{ maxHeight: 260, margin: 0 }}>{pretty}</pre> : <div className="empty">No record received recently.</div>}
-    </Panel>
-  );
-}
-
-export function Live() {
+export function Live({ embedded = false }: { embedded?: boolean }) {
   const { asset, loading } = useAsset();
   const { can } = useAuth();
   const id = asset?.device_id;
@@ -104,7 +73,6 @@ export function Live() {
   const d = detail.data;
   const m = mergeLive(d, l);
   const allTags = d.tags ?? [];
-  const cardTags = orderTags(allTags.filter((t) => t.role !== "machine_status"));
   const conflict = !!perf.data?.state_source.startsWith("CONFLICT");
   const running = runningNow(d, allTags, m.value, m.status, conflict);
   const lastSeg = perf.data?.segments.filter((s) => s.state !== "comms").pop();
@@ -128,11 +96,13 @@ export function Live() {
 
   return (
     <div className="screen">
-      <ScreenHead
-        eyebrow={`${d.asset_type || "Asset"} · ${d.name || d.device_id}`}
-        title="Live view"
-        desc="Values from the PLC as they arrive. Grey means normal. Colour appears only when something needs attention."
-      />
+      {!embedded && (
+        <ScreenHead
+          eyebrow={`${d.asset_type || "Asset"} · ${d.name || d.device_id}`}
+          title="Live view"
+          desc="Values from the PLC as they arrive. Grey means normal. Colour appears only when something needs attention."
+        />
+      )}
       <div className={`banner${state === "stopped" ? " stopped" : state === "comms" || state === "awaiting" ? " comms" : hasCrit ? " alarm" : " running"}`} role="status" aria-live="polite">
         <div className="state">
           <i />
@@ -191,82 +161,26 @@ export function Live() {
         </div>
       )}
 
-      <div className="kpis">
-        {cardTags.map((t) => {
-          const v = m.value(t);
-          const bad = m.quality(t) === 2;
-          const st = tagState(t, v, { comms, bad });
-          const cls = st.cls === "warn" ? "warn" : st.cls === "crit" ? "crit" : st.cls === "comms" ? "comms" : st.cls === "bad" ? "bad" : "";
-          const spark = (hist.data?.series[t.tag] ?? []).map((p) => [p[0], p[1]] as [number, number | null]);
-          return (
-            <div key={t.tag} className={`kpi ${cls}`}>
-              <div className="kh">
-                <div>
-                  <div className="kl">{t.display_name || t.tag}</div>
-                  <div className="kt">{t.tag}</div>
-                </div>
-                <Chip cls={st.cls}>{st.label}</Chip>
-              </div>
-              <div className="kv2">
-                {formatValue(v, t)}
-                {t.unit && !t.value_labels ? <small>{t.unit}</small> : null}
-              </div>
-              {typeof v === "number" && <RangeBar tag={t} value={v} />}
-              {t.data_type === "number" && spark.length > 1 && <Sparkline points={spark} range={t.min_value != null && t.max_value != null ? [t.min_value, t.max_value] : null} ariaLabel={`${t.display_name || t.tag}, last 15 minutes`} />}
-              <div className="kf">
-                <span>{normalText(t)}</span>
-                <span>{limitText(t)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="grid g-7-5">
-        <Panel title="Last 15 minutes" sub="Shaded band = normal range · dashed = warning / critical">
-          {tags.length === 0 ? (
-            <div className="empty">No numeric tags yet.</div>
-          ) : (
-            <Lanes
-              lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`))}
-              from={end - span}
-              to={end}
-              gapMs={Math.max(15, d.asset_config?.comms_timeout_s ?? 15) * 1000}
-            />
-          )}
-        </Panel>
-        <div className="grid" style={{ alignContent: "start" }}>
-          <Panel
-            title={`Active alarms · ${d.name || d.device_id}`}
-            actions={
-              <Link className="sub" to={`/alarms?asset=${encodeURIComponent(d.device_id)}`}>
-                Open alarm list
-              </Link>
-            }
-          >
-            {activeAlarms.length ? (
-              <div className="alarmlist">
-                {activeAlarms.slice(0, 5).map((a) => (
-                  <div className="check" key={a.id}>
-                    <Chip cls={a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : "info"}>
-                      {a.severity === "critical" ? "Critical" : a.severity === "warning" ? "Warning" : "Info"}
-                    </Chip>
-                    <div>
-                      <b>{a.message || a.rule_name}</b> <span className="muted mono">since {fmtT(a.raised_at)}</span>
-                      {a.context && <div className="ctx">{a.context}</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted" style={{ margin: 0 }}>
-                No active alarms.
-              </p>
-            )}
-          </Panel>
-          <RawRecord deviceId={d.device_id} />
-        </div>
-      </div>
+      <Panel title="Last 15 minutes" sub="Shaded band = normal range · dashed = warning / critical">
+        {tags.length === 0 ? (
+          <div className="empty">No numeric tags yet.</div>
+        ) : (
+          <Lanes
+            lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`)).map((lane) => {
+              const t = tags.find((x) => x.tag === lane.key)!;
+              const fault = tagFault(t, m.value(t), { comms, bad: m.quality(t) === 2 });
+              return {
+                ...lane,
+                verdict: fault ? ("NG" as const) : ("OK" as const),
+                verdictHref: fault ? `/alarms?${new URLSearchParams({ asset: d.device_id, tag: t.tag })}` : undefined,
+              };
+            })}
+            from={end - span}
+            to={end}
+            gapMs={Math.max(15, d.asset_config?.comms_timeout_s ?? 15) * 1000}
+          />
+        )}
+      </Panel>
     </div>
   );
 }

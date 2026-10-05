@@ -57,6 +57,9 @@ export interface Performance {
   longest_stop_s: number | null;
   avg_speed_running: number | null;
   speed_target: number | null;
+  /** How close actual readings are to their rated values, 0–1. 1 means actual equals rated. */
+  performance: number | null;
+  rated_actual: { tag: string; label: string; unit: string; actual: number; rated: number; ratio: number }[];
   speed_tag: PublicTag | null;
   segments: { state: "run" | "stop" | "comms"; start: number; end: number }[];
   shifts: {

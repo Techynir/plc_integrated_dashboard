@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "./api";
 import { AuthProvider, useAuth, useAuthConfig, useMe } from "./auth";
@@ -10,7 +10,6 @@ import { Loading } from "./components/ui";
 import { Login } from "./pages/Login";
 import { LoggedOut } from "./pages/LoggedOut";
 import { Overview } from "./pages/console/Overview";
-import { Live } from "./pages/console/Live";
 import { Trends } from "./pages/console/Trends";
 import { Alarms } from "./pages/console/Alarms";
 import { Performance } from "./pages/console/Performance";
@@ -50,10 +49,17 @@ queryClient.getQueryCache().subscribe((event) => {
   }
 });
 
-/** Old device links (/devices/:id) open the asset's live view. */
+/** Old device links (/devices/:id) open that asset on the plant overview. */
 function DeviceRedirect() {
   const { id } = useParams();
-  return <Navigate to={`/live?asset=${encodeURIComponent(id ?? "")}`} replace />;
+  return <Navigate to={`/?asset=${encodeURIComponent(id ?? "")}`} replace />;
+}
+
+/** Live view now sits on the plant overview. */
+function LiveRedirect() {
+  const [params] = useSearchParams();
+  const asset = params.get("asset");
+  return <Navigate to={asset ? `/?asset=${encodeURIComponent(asset)}` : "/"} replace />;
 }
 
 function AdminOnly({ children }: { children: JSX.Element }) {
@@ -78,7 +84,7 @@ function Authenticated() {
     <Layout>
       <Routes>
         <Route path="/" element={<Overview />} />
-        <Route path="/live" element={<Live />} />
+        <Route path="/live" element={<LiveRedirect />} />
         <Route path="/trends" element={<Trends />} />
         <Route path="/alarms" element={<Alarms />} />
         <Route path="/performance" element={<Performance />} />
