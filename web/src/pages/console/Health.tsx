@@ -3,6 +3,7 @@ import { roleTag, useAsset } from "../../hooks";
 import { Chip, fmtDT, fmtNum, MissingRole, Panel, ScreenHead } from "../../components/console";
 import { Lanes, Projection, Scatter } from "../../components/charts";
 import { ErrorText, Loading, useNow } from "../../components/ui";
+import { Insights } from "../../components/rules";
 import { lanesFor } from "./Live";
 
 const STATE = {
@@ -70,7 +71,9 @@ export function Health() {
     return "Short-term trend is flat. No early warning.";
   })();
   const n = d?.load_signature.length ?? 0;
-  const band = d ? Math.max(2 * d.inputs.sigma, 0.5) : 0;
+  const rm = d?.rule_model ?? null;
+  const band = rm ? rm.limit : d ? Math.max(2 * d.inputs.sigma, 0.5) : 0;
+  const usual = d?.vibration_usual ?? null;
 
   return (
     <div className="screen">
@@ -131,9 +134,13 @@ export function Health() {
                     normal={vt.min_value != null && vt.max_value != null ? [vt.min_value, vt.max_value] : null}
                     unit={vt.unit}
                   />
-                  <div className="note" style={{ marginTop: 8 }}>
-                    {projNote}
-                  </div>
+                  {d.insights.trend.length ? (
+                    <Insights items={d.insights.trend} />
+                  ) : (
+                    <div className="note" style={{ marginTop: 8 }}>
+                      {projNote}
+                    </div>
+                  )}
                 </>
               )}
             </Panel>
@@ -165,17 +172,20 @@ export function Health() {
                 <>
                   <Scatter
                     points={d.load_signature.map((p, k) => ({ x: p.x, y: p.y, t: p.t, hi: p.residual != null && Math.abs(p.residual) > band, recent: k >= n - 5 }))}
-                    model={d.model}
+                    model={rm ?? d.model}
                     band={band}
                     xLabel={`Speed (${st.unit})`}
                     yLabel={`Current (${ct.unit})`}
-                    highlight="outside the band"
+                    highlight={rm ? "worked too hard" : "outside the band"}
                   />
-                  <div className="note" style={{ marginTop: 8 }}>
-                    {d.model
-                      ? `Dashed line: expected current for the speed (${fmtNum(d.model.b, 1)} ${ct.unit} + ${fmtNum(d.model.m, 3)} ${ct.unit} per ${st.unit}, fitted on ${d.model.n} running minutes). Band ±${fmtNum(band, 1)} ${ct.unit}. Right now the drive is ${signed(d.inputs.residual, 1)} ${ct.unit} from expected${d.inputs.residual != null && Math.abs(d.inputs.residual) > band ? ", outside the band" : ""}.`
-                      : "Not enough running minutes to fit the expected current yet."}
+                  <div className="foot">
+                    {rm
+                      ? `Dashed line: normal current at each speed. Shaded: normal ± ${fmtNum(band, 0)} ${ct.unit}. Orange dots: the motor worked too hard for its speed.`
+                      : d.model
+                        ? `Dashed line: expected current for the speed (${fmtNum(d.model.b, 1)} ${ct.unit} + ${fmtNum(d.model.m, 3)} ${ct.unit} per ${st.unit}, fitted on ${d.model.n} running minutes). Band ±${fmtNum(band, 1)} ${ct.unit}. Right now the drive is ${signed(d.inputs.residual, 1)} ${ct.unit} from expected${d.inputs.residual != null && Math.abs(d.inputs.residual) > band ? ", outside the band" : ""}.`
+                        : "Not enough running minutes to fit the expected current yet."}
                   </div>
+                  <Insights items={d.insights.load} />
                 </>
               ) : (
                 <p className="muted">Not enough data yet.</p>
@@ -188,15 +198,18 @@ export function Health() {
                 <>
                   <Scatter
                     points={d.vibration_vs_speed.map((p, k, a) => ({ x: p.x, y: p.y, t: p.t, hi: p.above, recent: k >= a.length - 5 }))}
-                    model={d.vibration_regression}
+                    model={usual ? { m: usual.usual / usual.ref_speed, b: 0 } : d.vibration_regression}
                     xLabel={`Speed (${st.unit})`}
                     yLabel={`Vibration (${vt.unit})`}
-                    highlight="above the cloud"
+                    highlight={usual ? "shook more than usual" : "above the cloud"}
+                    marks={warn != null ? [{ y: warn, label: `Warning ${warn} ${vt.unit}` }] : undefined}
                   />
-                  <div className="note" style={{ marginTop: 8 }}>
-                    Vibration normally scales with speed. Points sitting above the cloud at the same speed are the early sign of wear, even when the value is still inside its
-                    alarm limit.
+                  <div className="foot">
+                    {usual
+                      ? `Shaking grows with speed. Dashed line: usual shaking at each speed (${fmtNum(usual.usual, 1)} ${vt.unit} at ${fmtNum(usual.ref_speed, 0)} ${st.unit}). Orange dots: shaking more than usual for that speed.`
+                      : "Vibration normally scales with speed. Points sitting above the cloud at the same speed are the early sign of wear, even when the value is still inside its alarm limit."}
                   </div>
+                  <Insights items={d.insights.vibration} />
                 </>
               ) : (
                 <p className="muted">Not enough data yet.</p>

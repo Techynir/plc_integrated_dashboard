@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, Device, Tag } from "./api";
+import { api, AssetConfig, Device, Tag } from "./api";
 import { LiveDevice } from "./live";
 
 export function useDevices() {
@@ -86,4 +86,15 @@ export function runningNow(d: Device, tags: Tag[], value: (t: Tag) => unknown, s
   if (status === "RUN") return true;
   if (status === "STOP" || status === "IDLE" || status === "FAULT") return false;
   return null;
+}
+
+/** Inside the asset's weekly scheduled maintenance window (asset_config.maintenance) at `ms`? */
+export function inMaintenance(w: AssetConfig["maintenance"], ms: number): boolean {
+  if (!w) return false;
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: w.tz || "UTC", weekday: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ms));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  if (get("weekday") !== w.weekday) return false;
+  const hm = (s: string) => Number(s.split(":")[0]) * 60 + Number(s.split(":")[1]);
+  const minute = Number(get("hour")) * 60 + Number(get("minute"));
+  return hm(w.start) <= minute && minute < hm(w.end);
 }

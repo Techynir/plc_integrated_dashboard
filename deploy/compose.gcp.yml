@@ -11,6 +11,7 @@ services:
   init: { logging: *gcp-logging }
   mosquitto: { logging: *gcp-logging }
   ingestor: { logging: *gcp-logging }
+  pm01-sim: { logging: *gcp-logging }
   api: { logging: *gcp-logging }
   simulator-ui: { logging: *gcp-logging }
   web: { logging: *gcp-logging }

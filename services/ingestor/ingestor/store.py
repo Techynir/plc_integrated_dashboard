@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncpg
 
 from .alarms import Rule
+from .process_rules import Inputs, TagInfo, inputs_from_config
 from .parsing import Reading, RegisterDef, TagConfig, Topic
 
 
@@ -21,6 +22,7 @@ class DeviceState:
     simulated: bool = False
     run_since: dt.datetime | None = None  # when the machine last went to RUN (restart grace)
     poll_s: float = 1.0  # gateway poll interval (asset_config.poll_interval_ms), spaces bursts
+    maintenance: dict | None = None  # weekly scheduled maintenance window (asset_config.maintenance)
 
     @property
     def offline_after_s(self) -> float:
@@ -52,11 +54,13 @@ class Store:
     async def load_devices(self) -> dict[str, DeviceState]:
         rows = await self.pool.fetch(
             "SELECT device_id, expected_interval_s, enabled, online, last_seen, status, simulated, "
-            "asset_config->'poll_interval_ms' AS poll_ms FROM devices"
+            "asset_config->'poll_interval_ms' AS poll_ms, asset_config->'maintenance' AS maint FROM devices"
         )
         out = {}
         for r in rows:
             row = dict(r)
+            maint = row.pop("maint")
+            row["maintenance"] = json.loads(maint) if maint else None
             raw = row.pop("poll_ms")
             poll_ms = json.loads(raw) if raw is not None else None
             row["poll_s"] = (poll_ms / 1000.0 if isinstance(poll_ms, (int, float)) and poll_ms > 0
@@ -90,10 +94,26 @@ class Store:
     async def load_rules(self) -> list[Rule]:
         rows = await self.pool.fetch(
             "SELECT id, name, device_id, tag, rule_type, threshold, deadband, severity, message, webhook_url, "
-            "on_delay_s, off_delay_s, suppress_when_stopped, guidance "
+            "on_delay_s, off_delay_s, suppress_when_stopped, guidance, managed_by "
             "FROM alarm_rules WHERE enabled"
         )
         return [Rule(**dict(r)) for r in rows]
+
+    async def load_process_inputs(self) -> dict[str, Inputs]:
+        """Per device: tags by role (units, normal range, limits) and the rule coefficients."""
+        roles: dict[str, dict[str, TagInfo]] = {}
+        for r in await self.pool.fetch(
+            "SELECT device_id, tag, role, unit, min_value, max_value, warn_limit, crit_limit FROM tags WHERE role IS NOT NULL"
+        ):
+            roles.setdefault(r["device_id"], {})[r["role"]] = TagInfo(
+                r["tag"], r["unit"], r["min_value"], r["max_value"], r["warn_limit"], r["crit_limit"]
+            )
+        out = {}
+        for r in await self.pool.fetch("SELECT device_id, asset_config::text AS cfg FROM devices"):
+            cfg = json.loads(r["cfg"] or "{}")
+            dev_roles = roles.get(r["device_id"], {})
+            out[r["device_id"]] = inputs_from_config(dev_roles, cfg)
+        return out
 
     async def load_active_alarms(self) -> dict[tuple[int, str], int]:
         rows = await self.pool.fetch(
@@ -215,20 +235,22 @@ class Store:
     # ---------------------------------------------------------------- alarms
 
     ALARM_COLUMNS = (
-        "id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, context, "
+        "id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, context, explain::text, "
         "raised_at, cleared_at, acked_at, acked_by, ack_comment"
     )
 
-    async def raise_alarm(self, rule: Rule, device_id: str, message: str, value: float | None) -> tuple[dict, bool]:
+    async def raise_alarm(self, rule: Rule, device_id: str, message: str, value: float | None,
+                          explain: dict | None = None) -> tuple[dict, bool]:
         """Returns (alarm, created). If an alarm is already active for the rule/device it is returned as-is."""
         row = await self.pool.fetchrow(
             f"""
-            INSERT INTO alarms (rule_id, rule_name, device_id, tag, severity, message, trigger_value, context)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO alarms (rule_id, rule_name, device_id, tag, severity, message, trigger_value, context, explain)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
             ON CONFLICT (rule_id, device_id) WHERE cleared_at IS NULL DO NOTHING
             RETURNING {self.ALARM_COLUMNS}
             """,
             rule.id, rule.name, device_id, rule.tag, rule.severity, message, value, rule.guidance,
+            json.dumps(explain) if explain else None,
         )
         if row is not None:
             return self._alarm_dict(row), True
@@ -248,6 +270,7 @@ class Store:
     @staticmethod
     def _alarm_dict(row) -> dict:
         d = dict(row)
+        d["explain"] = json.loads(d.pop("explain")) if d.get("explain") else None
         for key in ("raised_at", "cleared_at", "acked_at"):
             d[key] = d[key].isoformat() if d[key] else None
         d["active"] = row["cleared_at"] is None

@@ -4,12 +4,14 @@ import { useAsset } from "../../hooks";
 import { Chip, fmtNum, fmtPct, MissingRole, Panel, ScreenHead, Tile, WindowNotes } from "../../components/console";
 import { Histogram, Scatter, SpcChart } from "../../components/charts";
 import { ErrorText, Loading } from "../../components/ui";
+import { Insights } from "../../components/rules";
 
 const RANGES = [
   { h: 1, label: "1 h" },
   { h: 8, label: "8 h" },
   { h: 24, label: "24 h" },
   { h: 72, label: "3 days" },
+  { h: 168, label: "7 days" },
 ];
 
 function capCls(v: number | null | undefined) {
@@ -86,13 +88,25 @@ export function Quality() {
           >
             {d.minute_means?.length ? (
               <>
-                <SpcChart points={d.minute_means} limits={d.limits ?? null} spec={d.spec ?? { lsl: null, usl: null }} unit={unit} decimals={dec} />
+                <SpcChart
+                  points={d.minute_means}
+                  limits={d.limits ?? null}
+                  spec={d.spec ?? { lsl: null, usl: null }}
+                  unit={unit}
+                  decimals={dec}
+                  predicted={d.predicted}
+                  warn={d.warn_limit}
+                  areas={(d.findings ?? []).map((f) => ({ start: f.start, end: f.end ?? Date.parse(d.window.end) / 1000 }))}
+                />
                 <div className="legend">
                   <span><i style={{ background: "var(--trace)" }} />1-min mean</span>
+                  {d.predicted?.length ? <span><i style={{ background: "transparent", borderTop: "2px dashed var(--warning)", height: 0 }} />expected from steam, 1 min ahead</span> : null}
+                  {d.findings?.length ? <span><i style={{ background: "var(--warning-soft)", border: "1px solid var(--warning)" }} />paper getting wet</span> : null}
                   <span><i style={{ background: "var(--critical)" }} />beyond control limits</span>
                   <span><i style={{ background: "var(--warning)" }} />8 in a row on one side</span>
                   <span><i style={{ background: "var(--band)", border: "1px solid var(--good)" }} />normal range</span>
                 </div>
+                <Insights items={d.insights?.control} />
               </>
             ) : (
               <div className="empty">No running minutes with moisture data in this range.</div>
@@ -116,13 +130,20 @@ export function Quality() {
                 <>
                   <Scatter
                     points={d.scatter}
-                    model={d.regression}
+                    model={d.moisture_model ? { m: d.moisture_model.b, b: d.moisture_model.a } : d.regression}
                     xLabel={`${d.steam_tag.label} (${d.steam_tag.unit})`}
                     yLabel={`${mt?.label} (${unit})`}
+                    marks={[
+                      ...(d.steam_limit != null ? [{ x: d.steam_limit, label: `${fmtNum(d.steam_limit, 2)} ${d.steam_tag.unit}` }] : []),
+                      ...(d.warn_limit != null ? [{ y: d.warn_limit, label: `Warning ${d.warn_limit} ${unit}` }] : []),
+                    ]}
                   />
-                  <p className="note">
-                    Higher steam pressure dries the sheet more, so the points normally slope down. A flat or rising cloud points to a sensor or control issue.
-                  </p>
+                  <div className="foot">
+                    {d.steam_limit != null
+                      ? `Dashed line: moisture expected a minute after each steam pressure. Orange lines: the ${fmtNum(d.steam_limit, 2)} ${d.steam_tag.unit} steam level and the ${d.warn_limit} ${unit} warning.`
+                      : "Higher steam pressure dries the sheet more, so the points normally slope down. A flat or rising cloud points to a sensor or control issue."}
+                  </div>
+                  <Insights items={d.insights?.steam} />
                 </>
               ) : (
                 <div className="empty">Not enough running minutes.</div>

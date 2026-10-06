@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .. import db
-from .. import limits, mqtt_accounts, register_map
+from .. import limits, mqtt_accounts, process_rules, register_map
 from ..config import settings
 from ..deps import CurrentUser, admin, viewer
 from ..history import query_history
@@ -333,6 +333,7 @@ async def update_tag(device_id: str, tag: str, body: TagUpdate, user: CurrentUse
         raise HTTPException(404, "Tag not found")
     async with db.pool().acquire() as conn:
         await limits.sync_limit_rules(conn, device_id)
+        await process_rules.sync_process_rules(conn, device_id)
     await db.audit(user.email, "tag.update", f"{device_id}/{tag}", body.model_dump(exclude_unset=True))
     row = await db.pool().fetchrow(
         f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) "
@@ -500,6 +501,7 @@ async def put_tag_settings(device_id: str, body: TagSettingsIn, user: CurrentUse
             if res == "UPDATE 0":
                 raise HTTPException(404, f"Tag {t.tag} not found")
         await limits.sync_limit_rules(conn, device_id)
+        await process_rules.sync_process_rules(conn, device_id)
     await db.audit(user.email, "tag.settings", device_id, {"tags": len(body.tags)})
     rows = await db.pool().fetch(
         f"SELECT {TAG_COLUMNS} FROM tags t LEFT JOIN tag_latest l USING (device_id, tag) WHERE t.device_id = $1 ORDER BY t.tag",

@@ -396,6 +396,41 @@ async def main() -> None:
                                                     "to": now_iso()})).json()
         check({t["tag"] for t in st["tags"]} == {"speed", "vib"} and st["tags"][1]["max"] == 6.0, "trend statistics")
 
+        # ---- process rules: built in from the roles, alarms explained as what / why / next
+        procs = [x for x in (await http.get("/api/v1/alarm-rules")).json() if (x.get("managed_by") or "").startswith(f"process:{DEVICE}:")]
+        check({x["managed_by"].rsplit(":", 1)[1] for x in procs} == {"vib_low_speed", "vib_rise"},
+              f"process rules follow the roles ({len(procs)} for speed + vibration)")
+        r = await http.delete(f"/api/v1/alarm-rules/{procs[0]['id']}")
+        check(r.status_code == 409, "built-in process rules cannot be deleted")
+
+        def rec2(steam: float, moist: float) -> tuple[str, str]:
+            return (topic, json.dumps({**base, "ts": now_iso(), "status": "RUN",
+                                       "tags": {"speed": 276.0, "vib": 3.0, "steam": steam, "moist": moist}}))
+
+        await publish(password, [rec2(4.17, 6.1)])
+        await asyncio.sleep(1.5)
+        r = await http.patch(f"/api/v1/devices/{DEVICE}", json={"asset_config": {
+            "speed_target": 276.5, "rules": {"moisture_model": {"a": 12.81, "b": -1.6}}}})
+        check(r.status_code == 200, "rule coefficients saved in asset_config")
+        r = await http.put(put, json={"tags": [
+            {"tag": "steam", "role": "steam_pressure", "unit": "bar", "min_value": 4.1, "max_value": 4.25},
+            {"tag": "moist", "role": "moisture", "unit": "%", "min_value": 5.9, "max_value": 6.4,
+             "limit_dir": "high", "warn_limit": 7.0, "crit_limit": 7.5},
+        ]})
+        check(r.status_code == 200, "steam and moisture roles saved")
+        await asyncio.sleep(1.5)  # rules reload
+        for _ in range(14):  # low steam for 14 s: longer than the rule's 10 s on-delay
+            await publish(password, [rec2(3.4, 6.1)])
+            await asyncio.sleep(1)
+        act = (await http.get("/api/v1/alarms", params={"device_id": DEVICE})).json()
+        wet = next((x for x in act if x["rule_name"] == "Low steam: paper getting wet"), None)
+        check(wet is not None and wet["explain"]["what"] == "Paper is getting too wet."
+              and "3.40 bar" in wet["explain"]["why"] and wet["explain"]["next"],
+              "live process rule alarm with what / why / next")
+        q = (await http.get(f"{a}/quality", params={"hours": 1})).json()
+        check(any(f["code"] == "steam_wet" and f["active"] for f in q["findings"]) and q["steam_limit"] is not None,
+              "process quality shows the finding and the steam level that wets the paper")
+
         # cleanup
         await http.delete(f"/api/v1/users/{viewer_id}")
         await http.delete(f"/api/v1/alarm-rules/{rule_id}")

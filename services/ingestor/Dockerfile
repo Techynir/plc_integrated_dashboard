@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY schemas ./schemas
 COPY services/ingestor/ingestor ./ingestor
 
-RUN useradd --uid 10001 --no-create-home app
+RUN useradd --uid 10001 --no-create-home app \
+    && mkdir /simstate && chown app /simstate  # pm01-sim checkpoint volume (live_sim.py)
 USER app
 
 CMD ["python", "-m", "ingestor.main"]

@@ -112,6 +112,8 @@ export function DataQuality() {
   const d = q.data;
   if (!asset) return <div className="panel empty">No asset selected.</div>;
   const burst = d?.update_interval.burst;
+  const planned = d?.comms_events.filter((e) => e.planned).length ?? 0;
+  const unplanned = (d?.comms_events.length ?? 0) - planned;
 
   return (
     <div className="screen">
@@ -138,7 +140,12 @@ export function DataQuality() {
           <div className="tiles">
             <Tile k="Completeness" v={fmtPct(d.completeness)} unit="%" cls={d.completeness != null && d.completeness < 0.95 ? "warn" : "good"} s={`vs 1 record / ${d.interval_s} s`} />
             <Tile k="Poll success (1 h)" v={fmtPct(d.poll_success_1h)} unit="%" cls={d.poll_success_1h != null && d.poll_success_1h < 0.95 ? "warn" : undefined} />
-            <Tile k="No data" v={fmtDur(d.comms_lost_s)} s={`${d.comms_events.length} outage(s) > ${d.comms_timeout_s} s`} cls={d.comms_events.length ? "warn" : undefined} />
+            <Tile
+              k="No data"
+              v={fmtDur(d.comms_lost_s)}
+              s={`${unplanned} outage(s) > ${d.comms_timeout_s} s${planned ? ` · ${planned} scheduled maintenance` : ""}`}
+              cls={unplanned ? "warn" : undefined}
+            />
             <Tile k="Rejected reads" v={d.bad_reads} s="out-of-range values discarded" cls={d.bad_reads ? "warn" : undefined} />
             <Tile
               k="Update interval"
@@ -188,7 +195,10 @@ export function DataQuality() {
               {d.update_interval.series.length ? <IntervalChart points={d.update_interval.series} timeoutS={d.comms_timeout_s} /> : <div className="empty">No records.</div>}
             </Panel>
           </div>
-          <Panel title="Communication outages" sub={`gaps longer than ${d.comms_timeout_s} s, newest first`}>
+          <Panel
+            title="Communication outages"
+            sub={`gaps longer than ${d.comms_timeout_s} s, newest first${d.maintenance ? ` · scheduled maintenance every ${d.maintenance.weekday} ${d.maintenance.start}–${d.maintenance.end}` : ""}`}
+          >
             {d.comms_events.length ? (
               <div className="table-wrap" style={{ maxHeight: 320, overflowY: "auto" }}>
                 <table>
@@ -198,6 +208,7 @@ export function DataQuality() {
                       <th>Restored</th>
                       <th className="num">Duration</th>
                       <th className="num">Records missed</th>
+                      <th>Cause</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -210,6 +221,7 @@ export function DataQuality() {
                           <td className="small nowrap">{e.end ? fmtDT(e.end) : <Chip cls="comms">Still lost</Chip>}</td>
                           <td className="num">{fmtDur(e.seconds)}</td>
                           <td className="num">{e.missing_records.toLocaleString()}</td>
+                          <td className="small">{e.planned ? <Chip cls="info">Scheduled maintenance</Chip> : "Communication lost"}</td>
                         </tr>
                       ))}
                   </tbody>

@@ -211,37 +211,52 @@ How it behaves:
 * **Removal:** a simulated device is removed with all its data when you click **Remove** or **Remove all**, and automatically `SIM_DEVICE_TTL_MIN` minutes after its last message.
 * **Real PLCs are protected:** the simulator cannot publish for a real PLC's device ID, and a real device cannot be created with a simulated device's ID.
 
-## 6a. Demo history for PM-01
+## 6a. PM-01 demo data: always-on simulator and stored history
 
-`python -m ingestor.history` fills a window (default: the last 7 days) for a real device with data that is stored exactly as if the PLC had sent it. It runs the program from *PM-01 Demo Data: Simple PLC Guide* (Step 5) once per simulated second and builds the gateway's real messages: `{"PM3032_DATA":[...]}`, D1 = 400002–400011 and D2 = 400001, on the device's `plc/<site>/<line>/<device>/telemetry` topic, delivered in 5-second bursts. Every message then goes through the live ingestor's own handler with a simulated clock. Decoding, bad-read rejection, status, raw data, alarms (delays, suppression while stopped) and offline detection all behave as in production.
+PM-01 is fed by a simulated gateway that never stops. The model is in `services/ingestor/ingestor/pm01.py`: the program from *PM-01 Demo Data: Simple PLC Guide* (Step 5), stepped once per second from a fixed start (1 Sep 2026). Two things use it, and together they form **one continuous run**:
 
-What the week contains:
+- **`pm01-sim` service (live).** It publishes the gateway's real messages once a second on the device's topic `plc/<site>/<line>/<device>/telemetry`: `{"PM3032_DATA":[...]}`, with D1 = 400002–400011 and D2 = 400001. They go through the normal broker → ingestor path, like a real gateway. It saves its model state to the `simstate` volume every 10 s and on shutdown, so a restart continues from the same second. It also sends any polls missed during a short pause (up to 5 minutes), like the gateway's buffer; the ingestor gives each poll its own second. Set `SIM_ENABLED=0` in `.env` to keep it idle, for example when the real gateway is connected.
+- **`python -m ingestor.history` (stored history).** It fills the last N days through the live ingestor's own handler with a simulated clock. Decoding, bad-read rejection, status, raw data, limit and process-rule alarms, and offline detection all behave as in production. With `--follow` it keeps going until it has caught up with the clock, then saves the model for `pm01-sim`.
+
+What the data contains:
 
 | Scenario | Source |
 |---|---|
-| Sensor noise, linked values (current and vibration follow speed; moisture follows steam about a minute later) | Guide, Steps 1–2 |
-| About 8 stops a day: status 0, speed ramps down and up at 3 m/min per second. Most come at random (guide); about 1–2 a day are caused by the process: a wet sheet (moisture above 7.3 % for 45 s) can break, a critical overload can trip the drive | Guide, Step 3, plus generator |
-| Problem events for speed, steam (and so moisture), motor current and vibration, 1–9 h apart (so 2–7 a day), each with its own ramp rate and length (2–15 min); about 1 in 5 reaches the critical value | Guide, Step 4, made irregular |
-| Bearing wear: vibration baseline rises at an accelerating rate (about 0.23 mm/s over the week) with day-to-day variation of ±0.03 mm/s | Generator only (gives Asset health a trend) |
-| A vibrating or worn bearing adds friction: +1.5 A per mm/s above normal at full speed; load events act only while the machine moves | Generator only |
-| Moisture noise about ±0.1 %; the sheet over-dries for a few minutes after steam pressure recovers | Generator only |
-| At standstill, vibration reads a drifting sensor noise floor (0.1–0.35 mm/s), never one fixed value | Generator only |
-| Communication lost: 2–4 short drops a day (some longer than the 60 s offline alarm), one ~35 min gateway reboot, one ~2 h network failure | Generator only (gateway / network) |
-| Bad reads: negative current, garbage speed float, unknown status code (65535), `nan` in the data | Generator only (gateway) |
+| Linked values: current and vibration follow speed; moisture follows steam about a minute later | Guide, Steps 1–2 |
+| Steady signals. Speed is held within about 0.1 m/min, steam pressure within about 0.01 bar, and vibration drifts about 0.01 mm/s at a steady speed. Every value is rounded to its sensor's resolution (speed 0.1, current 0.1 A, pressure 0.01 bar, moisture 0.01 %, vibration 0.01 mm/s), so readings repeat for long stretches without freezing | Generator |
+| About 8 stops a day: status 0, speed ramps down and up at 3 m/min per second. Most are random; about 1–2 a day are caused by the process (a wet sheet breaks, a critical overload trips the drive) | Guide, Step 3, plus generator |
+| Problem events for speed, steam (and so moisture), motor current and vibration, 1–9 h apart, each with its own ramp rate and length (2–15 min); about 1 in 5 reaches the critical value | Guide, Step 4, made irregular |
+| Bearing life. Vibration at full speed follows the bearing: slow, accelerating wear over a 150-day life (a new bearing on 12 Jan 2027, then every 150 days); a 14-day grease cycle (rises as the grease ages, drops back after greasing on alternate Mondays at 10:00 IST); a small day-to-day variation | Generator |
+| A vibrating or worn bearing adds friction: +1.5 A per mm/s above normal at full speed | Generator |
+| The sheet over-dries for a few minutes after steam pressure recovers; at standstill vibration reads a sensor noise floor (0.1–0.35 mm/s) | Generator |
+| Bad reads 3–5 a day: negative current, garbage speed float, unknown status code (65535), `nan` in the data | Gateway |
+| **Scheduled maintenance:** no data every Sunday 18:00–19:00 IST. The asset's `asset_config.maintenance` (`{"weekday": "Sunday", "start": "18:00", "end": "19:00", "tz": "Asia/Kolkata"}`) suppresses the offline alarm for that hour. The screens show it as "Scheduled maintenance", and Data quality lists it as a planned outage. There is no other communication loss | Gateway / asset configuration |
 
-Run it with the live ingestor stopped. On the VM, prefix each command with `sudo`.
+To rebuild the stored history and hand over to the live simulator without a gap (on the VM, prefix each command with `sudo`):
 
 ```bash
 docker compose exec -T db pg_dump -U plc -Fc plc > backup.dump        # always back up first
-docker compose stop ingestor
-docker compose run --rm --no-deps -e HISTORY_CONFIRM=1 ingestor \
-  python -m ingestor.history conveyer-plc-line-01 --days 7 --replace   # --dry-run to preview
-docker compose start ingestor
+docker compose stop ingestor pm01-sim
+docker compose run --rm --no-deps -e HISTORY_CONFIRM=1 pm01-sim \
+  python -m ingestor.history conveyer-plc-line-01 --days 7 --replace --follow   # --dry-run to preview
+docker compose up -d ingestor pm01-sim                                 # right after it finishes
 ```
+
+`--replace` deletes the device's stored values, raw messages, alarms, stop reasons and ingest errors in the window first. The same `--seed` (default 12345, the guide's start number) always gives the same data. A run takes about 4 minutes on a laptop and about 45 minutes on the VM; `--follow` then catches up with the time that passed meanwhile. Raw messages older than 7 days are removed by the normal retention.
 
 Not modelled yet (parked, see [OPEN_POINTS.md](OPEN_POINTS.md) item 4): speed affecting moisture and steam, dryer flooding, sheet-break signatures and roll resonance.
 
-`--replace` deletes the device's stored values, raw messages, alarms, stop reasons and ingest errors inside the window first. The same `--seed` (default 12345, the guide's start number) always gives the same week. A run takes about 3 minutes on a laptop. Raw messages older than 7 days are removed by the normal retention, so the Raw data tab's history shortens day by day.
+### Process rules over stored data
+
+The process rules (docs/PROCESS_RULES.md) run live in the ingestor. To apply them to data that is already stored, without changing the data:
+
+```bash
+docker compose stop ingestor
+docker compose run --rm --no-deps ingestor python -m ingestor.rules_backfill conveyer-plc-line-01 --days 7 --fit --replace
+docker compose start ingestor
+```
+
+`--fit` derives the expected current for a speed and the moisture for a steam pressure from the stored running minutes and saves them in the asset's `asset_config.rules` (live evaluation uses the same values). `--replace` deletes the process-rule alarms already stored for the window. The alarms appear in Alarms & events (unacknowledged). Asset health and Process quality turn them into insights (what, why, next action) under the graph they belong to; see `services/api/app/insights.py`.
 
 ## 7. API
 

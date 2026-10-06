@@ -580,3 +580,16 @@ details.panel > summary:focus-visible { outline: 2px solid var(--accent); outlin
 .banner .bmeta { font-size: 13px; }
 .alarmlist .check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .alarmlist .check:last-child { border-bottom: 0; }
+
+/* insights under a graph: what / why / next action */
+.insights { display: grid; gap: 8px; margin-top: 10px; }
+.insight { padding: 9px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--surface-2); }
+.insight.warn { border-left-color: var(--warning); }
+.insight.now { border-color: var(--warning); border-left-color: var(--warning); background: var(--warning-soft); }
+.insight.ok { border-left-color: var(--good); }
+.insight .chip { margin-bottom: 6px; }
+.explain { display: grid; grid-template-columns: 82px 1fr; gap: 3px 10px; margin: 0; font-size: 13px; }
+.explain dt { color: var(--ink-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding-top: 2px; }
+.explain dd { margin: 0; color: var(--ink); }
+td .explain, .alarmlist .explain { margin-top: 4px; font-size: 12px; }
+@media (max-width: 640px) { .explain { grid-template-columns: 1fr; } .explain dt { padding-top: 6px; } }

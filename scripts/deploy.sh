@@ -36,7 +36,19 @@ fi
 SSH=("${GCLOUD[@]}" compute ssh "$INSTANCE" --zone "$ZONE" --tunnel-through-iap --quiet)
 
 random_secret() { openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-"${1:-32}"; }
-secret_exists() { "${GCLOUD[@]}" secrets describe "$1" >/dev/null 2>&1 </dev/null; }
+# 0 = exists, 1 = definitely missing (NOT_FOUND). Any other error (token refresh, network, quota) is
+# retried, then stops the deploy: treating it as "missing" would try to create, or regenerate, a secret.
+secret_exists() {
+  local out attempt
+  for attempt in 1 2 3; do
+    if out="$("${GCLOUD[@]}" secrets describe "$1" 2>&1 </dev/null)"; then return 0; fi
+    if grep -qE "NOT_FOUND|not found|was not found" <<<"$out"; then return 1; fi
+    sleep $((attempt * 3))
+  done
+  echo "ERROR: could not check secret $1 in Secret Manager:" >&2
+  echo "$out" | grep -v "service account impersonation" >&2
+  exit 1
+}
 create_secret() {  # name value  (stored in the VM's region only)
   printf '%s' "$2" | "${GCLOUD[@]}" secrets create "$1" --replication-policy=user-managed \
     --locations="$REGION" --labels=app=plc-dashboard --data-file=- >/dev/null

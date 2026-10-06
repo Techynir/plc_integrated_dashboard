@@ -11,6 +11,7 @@ import { Chip, fmtDT, fmtDur, fmtNum, Panel, ScreenHead, tagFault, Tile } from "
 import { HourBars } from "../../components/charts";
 import { ErrorText, Loading, useNow } from "../../components/ui";
 import { orderTags } from "./Live";
+import { ExplainLines } from "../../components/rules";
 
 interface AlarmSummary {
   active_critical: number;
@@ -69,7 +70,7 @@ export function AlarmTable({ alarms, compact = false, showDevice = false, focusT
               <td>{sevChip(a)}</td>
               <td>
                 <div style={{ fontWeight: 600 }}>{a.message || a.rule_name}</div>
-                {a.context && <div className="ctx">{a.context}</div>}
+                {a.explain ? <ExplainLines e={a.explain} /> : a.context && <div className="ctx">{a.context}</div>}
               </td>
               {showDevice && <td className="mono small">{a.device_id}</td>}
               {!compact && <td className="num">{a.trigger_value != null ? fmtNum(a.trigger_value, 2) : "—"}</td>}
@@ -265,7 +266,10 @@ export function Alarms() {
                   <tr key={a.id} className={focusTag && a.tag === focusTag ? "hit" : undefined}>
                     <td className="small nowrap">{fmtDT(a.raised_at)}</td>
                     <td>{sevChip(a)}</td>
-                    <td>{a.message || a.rule_name}</td>
+                    <td>
+                      {a.message || a.rule_name}
+                      {a.explain && <ExplainLines e={a.explain} />}
+                    </td>
                     {scope === "all" && <td className="mono small">{a.device_id}</td>}
                     <td className="num">{a.trigger_value != null ? fmtNum(a.trigger_value, 2) : "—"}</td>
                     <td className="small nowrap">{a.cleared_at ? fmtDT(a.cleared_at) : <Chip cls="crit">Active</Chip>}</td>

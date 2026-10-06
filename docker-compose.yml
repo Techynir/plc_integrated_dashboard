@@ -105,6 +105,25 @@ services:
       mosquitto: { condition: service_started }
     logging: *logging
 
+  # Always-on PM-01 simulator: publishes the gateway's messages once a second on the device's real
+  # topic (ingestor/live_sim.py). SIM_ENABLED=0 in .env keeps it idle, e.g. when the real gateway is connected.
+  pm01-sim:
+    build:
+      context: .
+      dockerfile: services/ingestor/Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "ingestor.live_sim"]
+    environment:
+      <<: *app-env
+      SIM_ENABLED: ${SIM_ENABLED:-1}
+      SIM_TOPIC: ${SIM_TOPIC:-plc/Bijnor/Line1/conveyer-plc-line-01/telemetry}
+      SIM_CHECKPOINT: /simstate/pm01.pkl
+    volumes:
+      - simstate:/simstate
+    depends_on:
+      mosquitto: { condition: service_started }
+    logging: *logging
+
   api:
     build: ./services/api
     restart: unless-stopped
@@ -153,6 +172,7 @@ services:
     logging: *logging
 
 volumes:
+  simstate:
   dbdata:
   mqdata:
   brokerconf:

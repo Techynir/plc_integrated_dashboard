@@ -15,7 +15,7 @@ class FakePool:
 
 def row(device_id, poll_ms, expected=2.0):
     return {"device_id": device_id, "expected_interval_s": expected, "enabled": True, "online": False,
-            "last_seen": None, "status": None, "simulated": False, "poll_ms": poll_ms}
+            "last_seen": None, "status": None, "simulated": False, "poll_ms": poll_ms, "maint": None}
 
 
 def test_poll_interval_from_asset_config_or_expected_interval():

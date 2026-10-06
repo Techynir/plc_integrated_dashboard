@@ -303,3 +303,25 @@ def health_state(score: float | None) -> str:
     if score is None:
         return "nodata"
     return "good" if score >= 80 else "watch" if score >= 55 else "act"
+
+
+# ---------------------------------------------------------------- scheduled maintenance
+
+
+def in_maintenance(t: float, window: dict | None) -> bool:
+    """t inside the weekly window {weekday, start "HH:MM", end "HH:MM", tz} (asset_config.maintenance)."""
+    if not isinstance(window, dict) or not all(k in window for k in ("weekday", "start", "end")):
+        return False
+    local = dt.datetime.fromtimestamp(t, ZoneInfo(window.get("tz", "UTC")))
+    if local.strftime("%A") != window["weekday"]:
+        return False
+    hm = lambda text: int(text.split(":")[0]) * 60 + int(text.split(":")[1])  # noqa: E731
+    return hm(window["start"]) <= local.hour * 60 + local.minute < hm(window["end"])
+
+
+def planned_outage(start: float, end: float, window: dict | None) -> bool:
+    """Most (80 %) of the outage falls in the scheduled maintenance window."""
+    if not window or end <= start:
+        return False
+    points = [start + (end - start) * (k + 0.5) / 20 for k in range(20)]
+    return sum(in_maintenance(t, window) for t in points) >= 16

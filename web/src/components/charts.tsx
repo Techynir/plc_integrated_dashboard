@@ -417,12 +417,21 @@ export function SpcChart({
   spec,
   unit,
   decimals,
+  predicted,
+  warn,
+  areas: ruleAreas,
 }: {
   points: { t: number; v: number; flag: number }[];
   limits: { cl: number; ucl: number; lcl: number; no_variation?: boolean } | null;
   spec: { lsl: number | null; usl: number | null };
   unit: string;
   decimals: number;
+  /** moisture expected from steam pressure (process rule), drawn dashed */
+  predicted?: { t: number; v: number }[];
+  /** warning limit, drawn as a line */
+  warn?: number | null;
+  /** times a process rule was active, shaded */
+  areas?: { start: number; end: number }[];
 }) {
   const t = useTokens();
   const option = useMemo(() => {
@@ -434,14 +443,18 @@ export function SpcChart({
         { yAxis: limits.lcl, name: "LCL", lineStyle: { color: t.critical, type: "dashed", width: 1.2 } },
       );
     }
-    const ref = [...points.map((p) => p.v), spec.lsl, spec.usl, ...(limits && !limits.no_variation ? [limits.ucl, limits.lcl] : [])].filter((v): v is number => typeof v === "number");
+    if (warn != null) lines.push({ yAxis: warn, name: "Warning", lineStyle: { color: t.warning, type: "solid", width: 1.2 } });
+    const t0 = points.length ? points[0].t : 0;
+    const t1 = points.length ? points[points.length - 1].t + 60 : 0;
+    const pred = (predicted ?? []).filter((p) => p.t >= t0 && p.t <= t1);
+    const ref = [...points.map((p) => p.v), ...pred.map((p) => p.v), spec.lsl, spec.usl, warn, ...(limits && !limits.no_variation ? [limits.ucl, limits.lcl] : [])].filter((v): v is number => typeof v === "number");
     const yLo = ref.length ? Math.min(...ref) : 0;
     const yHi = ref.length ? Math.max(...ref) : 1;
     const yPad = (yHi - yLo) * 0.1 || 0.1;
     const areas = spec.lsl !== null && spec.usl !== null ? [[{ yAxis: spec.lsl, itemStyle: { color: t.band } }, { yAxis: spec.usl }]] : [];
     return {
       animation: false,
-      grid: { left: 52, right: 44, top: 14, bottom: 26 },
+      grid: { left: 52, right: 60, top: 14, bottom: 26 },
       xAxis: { type: "time", ...axisCommon(t), axisLabel: { ...axisCommon(t).axisLabel, hideOverlap: true, formatter: (v: number) => fmtT(v, false) } },
       yAxis: { type: "value", min: +(yLo - yPad).toPrecision(4), max: +(yHi + yPad).toPrecision(4), ...axisCommon(t), axisLabel: { ...axisCommon(t).axisLabel, showMinLabel: false, showMaxLabel: false } },
       tooltip: { trigger: "axis", ...tooltipBase(t), valueFormatter: (v: number) => `${fmtNum(v, decimals + 1)} ${unit}` },
@@ -452,6 +465,18 @@ export function SpcChart({
           markLine: lines.length ? { symbol: "none", silent: true, data: lines, label: { position: "end", color: t.muted, fontFamily: t.mono, fontSize: 10, formatter: "{b}" } } : undefined,
           markArea: areas.length ? { silent: true, data: areas } : undefined,
         },
+        ...(ruleAreas?.length
+          ? [{
+              name: "Rule active", type: "line", data: [], silent: true,
+              markArea: { silent: true, itemStyle: { color: withAlpha(t.warning, 0.16) }, data: ruleAreas.map((a) => [{ xAxis: a.start * 1000 }, { xAxis: a.end * 1000 }]) },
+            }]
+          : []),
+        ...(pred.length
+          ? [{
+              name: "Expected from steam", type: "line", data: pred.map((p) => [p.t * 1000, p.v]), symbol: "none",
+              lineStyle: { color: t.warning, type: "dashed", width: 1.3 }, itemStyle: { color: t.warning },
+            }]
+          : []),
         {
           name: "Out of control", type: "scatter", symbolSize: 9,
           data: points.filter((p) => p.flag > 0).map((p) => [p.t * 1000, p.v, p.flag]),
@@ -459,7 +484,7 @@ export function SpcChart({
         },
       ],
     } as EChartsCoreOption;
-  }, [points, limits, spec, unit, decimals, t]);
+  }, [points, limits, spec, unit, decimals, predicted, warn, ruleAreas, t]);
   return <EChart option={option} height={240} ariaLabel="Moisture control chart" />;
 }
 
@@ -510,6 +535,7 @@ export function Scatter({
   yLabel,
   highlight,
   height = 240,
+  marks,
 }: {
   points: { x: number; y: number; t?: number; hi?: boolean; recent?: boolean }[];
   model?: { m: number; b: number } | null;
@@ -518,14 +544,16 @@ export function Scatter({
   yLabel: string;
   highlight?: string;
   height?: number;
+  /** reference lines with a short label, e.g. the steam pressure below which paper gets wet */
+  marks?: { x?: number; y?: number; label: string }[];
 }) {
   const t = useTokens();
   const option = useMemo(() => {
-    const xs = points.map((p) => p.x);
+    const xs = points.map((p) => p.x).concat((marks ?? []).flatMap((m) => (m.x != null ? [m.x] : [])));
     const x0 = xs.length ? Math.min(...xs) : 0;
     const x1 = xs.length ? Math.max(...xs) : 1;
     const line = model ? [[x0, model.m * x0 + model.b], [x1, model.m * x1 + model.b]] : [];
-    const ys = points.map((p) => p.y).concat(band && model ? line.flatMap(([, y]) => [y - band, y + band]) : []);
+    const ys = points.map((p) => p.y).concat(band && model ? line.flatMap(([, y]) => [y - band, y + band]) : []).concat((marks ?? []).flatMap((m) => (m.y != null ? [m.y] : [])));
     const y0 = ys.length ? Math.min(...ys) : 0;
     const y1 = ys.length ? Math.max(...ys) : 1;
     // variation below 0.001 % of the value is float noise: treat it as a constant signal
@@ -542,7 +570,16 @@ export function Scatter({
     if (model && line.length) {
       series.push({ name: "model", type: "line", data: line, symbol: "none", lineStyle: { color: t.muted, type: "dashed", width: 1.2 }, silent: true, tooltip: { show: false } });
     }
-    series.push({ name: "minutes", type: "scatter", symbolSize: 6, data: points.filter((p) => !p.hi && !p.recent).map((p) => [p.x, p.y, p.t]), itemStyle: { color: t.trace, opacity: 0.55 } });
+    series.push({
+      name: "minutes", type: "scatter", symbolSize: 6, data: points.filter((p) => !p.hi && !p.recent).map((p) => [p.x, p.y, p.t]), itemStyle: { color: t.trace, opacity: 0.55 },
+      markLine: marks?.length
+        ? {
+            symbol: "none", silent: true,
+            data: marks.map((m) => ({ ...(m.x != null ? { xAxis: m.x } : { yAxis: m.y }), name: m.label, lineStyle: { color: t.warning, type: "solid", width: 1.2 } })),
+            label: { color: t.ink2, fontSize: 10, formatter: "{b}", position: "insideEndTop" },
+          }
+        : undefined,
+    });
     if (points.some((p) => p.hi && !p.recent)) {
       series.push({ name: highlight ?? "flagged", type: "scatter", symbolSize: 7, data: points.filter((p) => p.hi && !p.recent).map((p) => [p.x, p.y, p.t]), itemStyle: { color: t.warning } });
     }
@@ -564,7 +601,7 @@ export function Scatter({
       },
       series,
     } as EChartsCoreOption;
-  }, [points, model, band, xLabel, yLabel, highlight, t]);
+  }, [points, model, band, xLabel, yLabel, highlight, marks, t]);
   return <EChart option={option} height={height} ariaLabel={`${yLabel} against ${xLabel}`} />;
 }
 

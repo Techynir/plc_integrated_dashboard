@@ -18,7 +18,7 @@ class Rule:
     name: str
     device_id: str | None  # None = all devices
     tag: str | None
-    rule_type: str  # high | low | equals | fault | offline | stopped
+    rule_type: str  # high | low | equals | fault | offline | stopped | process (see process_rules.py)
     threshold: float | None
     deadband: float
     severity: str
@@ -28,6 +28,7 @@ class Rule:
     off_delay_s: float = 0.0
     suppress_when_stopped: bool = False
     guidance: str = ""  # likely cause / what to check, shown with the alarm
+    managed_by: str | None = None  # "limit:..." (from tag limits) or "process:<device>:<code>"
 
     def applies_to(self, device_id: str) -> bool:
         return self.device_id is None or self.device_id == device_id
@@ -39,6 +40,7 @@ class Transition:
     rule: Rule
     device_id: str
     value: float | None
+    explain: dict | None = None  # process rules: {"what", "why", "next"} in plain words
 
 
 def decide(rule: Rule, value, active: bool) -> str | None:

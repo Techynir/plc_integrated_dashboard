@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Alarm, api, qs, Tag } from "../../api";
 import { Performance, useAnalytics, useDevice, useHistory, windowEnd } from "../../assetApi";
 import { useAuth } from "../../auth";
-import { mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
+import { inMaintenance, mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
 import { useLiveDevice } from "../../live";
 import { formatValue } from "../../format";
 import { Chip, fmtDT, fmtDur, fmtNum, fmtT, Panel, ScreenHead, tagFault } from "../../components/console";
@@ -86,7 +86,10 @@ export function Live({ embedded = false }: { embedded?: boolean }) {
   const target = d.asset_config?.speed_target;
 
   const state = !m.lastSeen ? "awaiting" : comms ? "comms" : running === false ? "stopped" : "running";
-  const stateText = { awaiting: "Awaiting PLC link", comms: "Communication lost", stopped: "Stopped", running: running ? "Running" : "Online" }[state];
+  const maintenance = state === "comms" && inMaintenance(d.asset_config?.maintenance, now);
+  const stateText = maintenance
+    ? `Scheduled maintenance · data resumes at ${d.asset_config?.maintenance?.end}`
+    : { awaiting: "Awaiting PLC link", comms: "Communication lost", stopped: "Stopped", running: running ? "Running" : "Online" }[state];
   const since =
     lastSeg && !perf.data?.window.anchored
       ? lastSeg.start <= new Date(perf.data!.window.start).getTime() / 1000 + 1

@@ -1,6 +1,21 @@
 # PM-01 process relationships and draft rules
 
-**Status:** draft, 2026-10-04. Nothing here is implemented. Check the numbers with the mill's process engineer before any rule becomes an alarm.
+**Status:** partly built, 2026-10-04. The rules marked ✅ below run as alarms (live in the ingestor, and over stored data with `ingestor.rules_backfill`). Their results show as insights (what, why, next action) inside the graph panels on *Asset health* and *Process quality*, without naming the rule (`services/api/app/insights.py`). Check the numbers with the mill's process engineer before relying on them.
+
+| Rule | Built as | Screen |
+|---|---|---|
+| R1 status vs speed | ✅ "Status and speed disagree" (not the sheet-break part: no break signature in the data) | Asset health |
+| R2 current vs speed | ✅ "Motor working too hard for its speed", "Motor load dropped" (no flooding branch: needs moisture rising with current) | Asset health |
+| R3 vibration vs speed | ✅ "Bearing shakes too much for its speed" (reduced speed hides it), "Bearing shaking more than usual" (25 % of the warning limit above the usual level, ISO 10816-3 step rule). Not built: speed-band baselines, resonance bands | Asset health |
+| R4 steam → moisture early warning | ✅ "Low steam: paper getting wet" | Process quality |
+| R5 cause of high moisture | ✅ "Paper wet while steam is normal" (the steam case is R4) | Process quality |
+| R6 speed up at dryer limit | not built: needs the speed set-point and steam that follows speed | — |
+| R7 wet after restart | ✅ "Paper wet after restart" | Process quality |
+| R8 group alarms by cause | partly: R2 names the bearing when vibration is up too; no grouping in the alarm list yet | — |
+| R9 steam alarms during stops | not built (a limit setting, not a rule) | — |
+| R10 settling time | ✅ built into R2, R3 and R5 (3 min after a restart or a speed change) | — |
+
+Coefficients live in `asset_config.rules` (fitted by `rules_backfill --fit`): expected current = a + b × speed, moisture one minute later = a + b × steam pressure.
 
 This note covers how the five PM-01 measurements affect each other on a paper machine, and the monitoring rules that follow from that. It is based on published paper-making and condition-monitoring sources (listed in section 6). The 7 days of PM-01 data were only used to check the demo model; that data was generated from the PLC guide, so it cannot prove anything about a real machine.
 

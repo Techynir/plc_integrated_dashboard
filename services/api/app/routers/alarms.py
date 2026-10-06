@@ -14,7 +14,7 @@ RuleType = Literal["high", "low", "equals", "fault", "offline", "stopped"]
 Severity = Literal["critical", "warning", "info"]
 
 ALARM_COLUMNS = """
-    id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, context,
+    id, rule_id, rule_name, device_id, tag, severity, message, trigger_value, context, explain,
     raised_at, cleared_at, acked_at, acked_by, ack_comment
 """
 
@@ -198,6 +198,8 @@ async def create_rule(body: RuleIn, user: CurrentUser = Depends(admin)) -> dict:
 
 async def _refuse_managed(rule_id: int) -> None:
     managed = await db.pool().fetchval("SELECT managed_by FROM alarm_rules WHERE id = $1", rule_id)
+    if managed and managed.startswith("process:"):
+        raise HTTPException(409, "This is a built-in process rule; it follows the tag roles in Asset configuration")
     if managed:
         raise HTTPException(409, "This rule comes from tag limits; change it in Asset configuration")
 

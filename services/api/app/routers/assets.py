@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .. import analytics as an
-from .. import db
+from .. import db, insights, process_rules
 from ..config import settings
 from ..deps import CurrentUser, admin, operator, viewer
 
@@ -159,6 +159,44 @@ def tag_public(t: dict | None) -> dict | None:
 
 def window_info(start: float, end: float, anchored: bool) -> dict:
     return {"start": iso(start), "end": iso(end), "anchored": anchored}
+
+
+def period_text(hours: float) -> str:
+    if hours >= 48 and hours % 24 == 0:
+        return f"in the last {int(hours // 24)} days"
+    return "in the last hour" if hours == 1 else f"in the last {hours:g} hours"
+
+
+def rule_config(asset: dict) -> dict:
+    """asset_config.rules: coefficients the process rules use (fitted by ingestor.rules_backfill --fit)."""
+    rules = (asset["asset_config"] or {}).get("rules")
+    return rules if isinstance(rules, dict) else {}
+
+
+async def rule_findings(asset: dict, screen: str, start: float, stop: float) -> dict:
+    """Process rules shown on a screen, and their alarms in [start, stop): what / why / next."""
+    rules = await db.pool().fetch(
+        "SELECT id, name, managed_by FROM alarm_rules WHERE device_id = $1 AND managed_by LIKE $2 ORDER BY id",
+        asset["device_id"], f"process:{asset['device_id']}:%",
+    )
+    rules = [r for r in rules if process_rules.SCREEN.get(process_rules.code_of(r["managed_by"])) == screen]
+    rows = await db.pool().fetch(
+        "SELECT id, rule_id, severity, explain, trigger_value, raised_at, cleared_at, acked_at FROM alarms "
+        "WHERE rule_id = ANY($1) AND raised_at < to_timestamp($3) AND (cleared_at IS NULL OR cleared_at > to_timestamp($2)) "
+        "ORDER BY raised_at DESC LIMIT 500",
+        [r["id"] for r in rules], start, stop,
+    )
+    code = {r["id"]: process_rules.code_of(r["managed_by"]) for r in rules}
+    return {
+        "rules": [{"code": code[r["id"]], "name": r["name"]} for r in rules],
+        "findings": [
+            {"id": a["id"], "code": code[a["rule_id"]], "severity": a["severity"], "explain": a["explain"],
+             "value": a["trigger_value"], "start": epoch(a["raised_at"]),
+             "end": epoch(a["cleared_at"]) if a["cleared_at"] else None,
+             "active": a["cleared_at"] is None, "acked": a["acked_at"] is not None}
+            for a in rows
+        ],
+    }
 
 
 # ---------------------------------------------------------------- summary (overview tiles + asset cards)
@@ -366,14 +404,22 @@ async def quality(device_id: str, hours: float = Query(8, gt=0, le=24 * 7), end:
         pad = (hi - lo) * 0.08 or 0.05
         hist = an.histogram(values, lo - pad, hi + pad, bins=28)
 
-    scatter, reg = [], None
+    scatter, reg, predicted, steam_limit = [], None, [], None
+    mm_model = rule_config(asset).get("moisture_model") or {}
     if steam:
         s_run = dict(an.minute_means(an.in_states(await series(device_id, steam["tag"], start, stop), segs, {"run"}),
                                      min_count))
         pairs = [(s_run[t], v, t) for t, v in mm if t in s_run]
         scatter = [{"t": t, "x": x, "y": y} for x, y, t in pairs]
         reg = an.linreg([p[0] for p in pairs], [p[1] for p in pairs])
+        a, b = mm_model.get("a"), mm_model.get("b")
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b < 0:
+            # moisture the steam pressure leads to, about a minute later (the process rule's model)
+            predicted = [{"t": t + 60, "v": a + b * p} for t, p in sorted(s_run.items())]
+            if moist["warn_limit"] is not None:
+                steam_limit = (moist["warn_limit"] - a) / b
 
+    found = await rule_findings(asset, "quality", start, stop)
     return {
         **base,
         "minute_means": [{"t": t, "v": v, "flag": f} for (t, v), f in zip(mm, flags or [0] * len(mm))],
@@ -385,6 +431,18 @@ async def quality(device_id: str, hours: float = Query(8, gt=0, le=24 * 7), end:
         "histogram": hist,
         "scatter": scatter,
         "regression": reg,
+        "moisture_model": mm_model or None,
+        "predicted": predicted,
+        "steam_limit": steam_limit,  # below this steam pressure the paper gets too wet
+        "warn_limit": moist["warn_limit"],
+        "findings": found["findings"],
+        "insights": insights.quality_insights(
+            moisture=m_run,
+            steam=await series(device_id, steam["tag"], start - 900, stop) if steam else [],
+            moist_tag=tag_public(moist), steam_tag=tag_public(steam), model=mm_model or None, steam_limit=steam_limit,
+            findings=found["findings"], in_spec=cap["in_spec"] if cap else None, period=period_text(hours),
+            cap_s=max(5.0, 2 * asset["interval_s"]),
+        ),
     }
 
 
@@ -530,10 +588,20 @@ async def health(device_id: str, end: dt.datetime | None = None, _: CurrentUser 
             short = {"slope_per_min": reg["m"] if reg else None, "current": cur_v, "minutes_to_warning": mins}
 
     load_pts, vib_pts, vib_reg = [], [], None
+    rcfg = rule_config(asset)
+    cm = rcfg.get("current_model") or {}
+    rule_model = None
+    if isinstance(cm.get("a"), (int, float)) and isinstance(cm.get("b"), (int, float)):
+        # the process rule's expected current: "too hard" more than `limit` above it
+        rule_model = {"m": cm["b"], "b": cm["a"], "limit": max(10.0, 4 * float(cm.get("rmse") or 0))}
+    ref = (asset["asset_config"] or {}).get("speed_target")
+    if not isinstance(ref, (int, float)) and spd and spd["min_value"] is not None and spd["max_value"] is not None:
+        ref = (spd["min_value"] + spd["max_value"]) / 2
+    vib_base = None
     if spd and (cur or vib):
         tags = [spd["tag"]] + [t["tag"] for t in (cur, vib) if t]
         mm = await running_minute_means(asset, tags, stop - 86400, stop)
-        model = h["model"]
+        model = {"m": rule_model["m"], "b": rule_model["b"]} if rule_model else h["model"]
         for m in mm:
             if cur:
                 exp = model["m"] * m[spd["tag"]] + model["b"] if model else None
@@ -541,10 +609,19 @@ async def health(device_id: str, end: dt.datetime | None = None, _: CurrentUser 
                                  "residual": (m[cur["tag"]] - exp) if exp is not None else None})
         if vib:
             vib_reg = an.linreg([m[spd["tag"]] for m in mm], [m[vib["tag"]] for m in mm])
+            if isinstance(ref, (int, float)) and ref > 0:
+                # usual shaking corrected to full speed; the process rule flags 25 % of the warning limit above it
+                v_ref = sorted(m[vib["tag"]] * ref / m[spd["tag"]] for m in mm if m[spd["tag"]] > 0.35 * ref)
+                if len(v_ref) >= 60:
+                    vib_base = {"usual": v_ref[len(v_ref) // 2], "ref_speed": ref,
+                                "step": 0.25 * vib["warn_limit"] if vib["warn_limit"] is not None else None}
             for m in mm:
-                exp = vib_reg["m"] * m[spd["tag"]] + vib_reg["b"] if vib_reg else None
-                vib_pts.append({"t": m["t"], "x": m[spd["tag"]], "y": m[vib["tag"]],
-                                "above": exp is not None and m[vib["tag"]] - exp > 2 * max(vib_reg["rmse"], 0.05)})
+                if vib_base and vib_base["step"] is not None:
+                    above = m[vib["tag"]] * ref / m[spd["tag"]] - vib_base["usual"] > vib_base["step"]
+                else:
+                    exp = vib_reg["m"] * m[spd["tag"]] + vib_reg["b"] if vib_reg else None
+                    above = exp is not None and m[vib["tag"]] - exp > 2 * max(vib_reg["rmse"], 0.05)
+                vib_pts.append({"t": m["t"], "x": m[spd["tag"]], "y": m[vib["tag"]], "above": above})
     return {
         **h,
         "tags": {r: tag_public(role_tag(asset, r)) for r in ("vibration", "motor_current", "speed", "steam_pressure")},
@@ -554,7 +631,30 @@ async def health(device_id: str, end: dt.datetime | None = None, _: CurrentUser 
         "load_signature": load_pts,
         "vibration_vs_speed": vib_pts,
         "vibration_regression": vib_reg,
+        "rule_model": rule_model,
+        "vibration_usual": vib_base,
+        "insights": await health_insight_items(asset, stop, rule_model, vib_base, projection),
     }
+
+
+async def health_insight_items(asset: dict, stop: float, rule_model: dict | None, usual: dict | None,
+                               projection: dict | None) -> dict:
+    """What the rules found over the last week, as plain insights under each health graph."""
+    start = stop - insights.LOOKBACK_DAYS * 86400
+    roles = {r: role_tag(asset, r) for r in ("speed", "motor_current", "vibration")}
+    tags = [t["tag"] for t in roles.values() if t]
+    minutes = []
+    if roles["speed"] and len(tags) > 1:
+        names = {t["tag"]: k for k, t in (("speed", roles["speed"]), ("current", roles["motor_current"]),
+                                          ("vibration", roles["vibration"])) if t}
+        for m in await running_minute_means(asset, tags, start, stop):
+            minutes.append({"t": m["t"], **{names[tag]: m[tag] for tag in tags}})
+    found = await rule_findings(asset, "health", start, stop)
+    return insights.health_insights(
+        minutes=minutes, findings=found["findings"], stop=stop, speed=tag_public(roles["speed"]),
+        current=tag_public(roles["motor_current"]), vibration=tag_public(roles["vibration"]),
+        model=rule_model, usual=usual, projection=projection,
+    )
 
 
 # ---------------------------------------------------------------- data quality & link
@@ -644,11 +744,14 @@ async def data_quality(device_id: str, hours: float = Query(24, gt=0, le=24 * 7)
     burst = None
     if pauses and len(pauses) < len(arrival_gaps) * 0.5:  # most gaps are tiny: the gateway sends in bursts
         period_ms = pauses[len(pauses) // 2]
-        burst = {"period_s": period_ms / 1000, "messages": round(len(arrivals) / (len(pauses) + 1), 1)}
+        if period_ms > 1500 * interval:  # not just the register blocks of one poll sent together
+            burst = {"period_s": period_ms / 1000, "messages": round(len(arrivals) / (len(pauses) + 1), 1)}
 
     events = [e for e in an.comms_events(segs, stop, min_s=asset["gap_s"]) if first is not None and e["start"] >= first]
+    maint = (asset["asset_config"] or {}).get("maintenance")
     for e in events:
         e["missing_records"] = round(e["seconds"] / interval)
+        e["planned"] = an.planned_outage(e["start"], e["end"] or stop, maint)
     bad_reads = await db.pool().fetchval(  # messages with a rejected (out-of-range) read
         "SELECT count(DISTINCT ts) FROM telemetry WHERE device_id = $1 AND quality = 2 "
         "AND ts >= to_timestamp($2) AND ts < to_timestamp($3)", device_id, start, stop,
@@ -661,6 +764,7 @@ async def data_quality(device_id: str, hours: float = Query(24, gt=0, le=24 * 7)
         # time without data after the first sample in the window (before it, the device simply had no data yet)
         "comms_lost_s": sum(s.seconds for s in segs if s.state == "comms" and first is not None and s.start >= first),
         "comms_events": events,
+        "maintenance": maint,  # weekly scheduled maintenance window, if set
         "bad_reads": bad_reads,
         "completeness": an.mean([t["completeness"] for t in per_tag if t["completeness"] is not None]),
         "update_interval": {"p50_ms": pct(0.5), "p95_ms": pct(0.95), "series": gaps[-900:], "burst": burst},

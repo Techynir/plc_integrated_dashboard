@@ -10,7 +10,11 @@ const TYPE_LABELS: Record<RuleType, string> = {
   equals: "Value equals",
   fault: "Device reports FAULT",
   offline: "Device offline",
+  stopped: "Machine stopped",
+  process: "Process rule (built in)",
 };
+/** Types an admin can create; the others are made from tag limits or built in. */
+const CREATABLE: RuleType[] = ["high", "low", "equals", "fault", "offline"];
 
 function describe(r: AlarmRule): string {
   switch (r.rule_type) {
@@ -24,6 +28,10 @@ function describe(r: AlarmRule): string {
       return "status = FAULT";
     case "offline":
       return `offline > ${r.threshold}s`;
+    case "stopped":
+      return "status = STOP";
+    case "process":
+      return r.message;
   }
 }
 
@@ -110,7 +118,7 @@ function RuleModal({ rule, devices, onClose }: { rule?: AlarmRule; devices: Devi
         <label className="field">
           Condition
           <select value={form.rule_type} onChange={set("rule_type")}>
-            {(Object.keys(TYPE_LABELS) as RuleType[]).map((t) => (
+            {CREATABLE.map((t) => (
               <option key={t} value={t}>
                 {TYPE_LABELS[t]}
               </option>
@@ -234,12 +242,18 @@ export function AdminRules() {
                     </td>
                     <td className="small">{r.webhook_url ? "Webhook" : "—"}</td>
                     <td className="num nowrap">
-                      <button className="small ghost" onClick={() => setEditing(r)}>
-                        Edit
-                      </button>
-                      <button className="small ghost danger" onClick={() => confirm(`Delete rule "${r.name}"?`) && remove.mutate(r.id)}>
-                        Delete
-                      </button>
+                      {r.managed_by ? (
+                        <span className="small muted">{r.managed_by.startsWith("process:") ? "Built in" : "From tag limits"}</span>
+                      ) : (
+                        <>
+                          <button className="small ghost" onClick={() => setEditing(r)}>
+                            Edit
+                          </button>
+                          <button className="small ghost danger" onClick={() => confirm(`Delete rule "${r.name}"?`) && remove.mutate(r.id)}>
+                            Delete
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}

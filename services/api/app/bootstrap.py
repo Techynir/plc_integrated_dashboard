@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import asyncpg
 
-from . import mqtt_accounts
+from . import mqtt_accounts, process_rules
 from .config import settings
 from .mqtt_accounts import READ, SUBSCRIBE, WRITE
 from .security import hash_password
@@ -213,6 +213,7 @@ async def main() -> None:
         await ensure_service_accounts(conn)
         await ensure_broker_db_role(conn)
         await import_dynsec_devices(conn, BROKER_DATA_DIR)
+        await process_rules.sync_all(conn)  # built-in rules for every asset with the tag roles they need
     finally:
         await conn.close()
     write_broker_config(BROKER_CONF_DIR)

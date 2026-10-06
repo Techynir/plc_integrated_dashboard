@@ -81,3 +81,13 @@ def test_limit_scores_and_overall():
     assert a.overall_score({"bearing": (20, 0.4), "drive": (100, 0.3), "dryer": (100, 0.3)}) == 40
     assert a.overall_score({"x": (None, 1)}) is None
     assert a.health_state(85) == "good" and a.health_state(60) == "watch" and a.health_state(10) == "act"
+
+
+def test_outage_in_the_maintenance_window_is_planned():
+    w = {"weekday": "Sunday", "start": "18:00", "end": "19:00", "tz": "Asia/Kolkata"}
+    sunday_18 = dt.datetime(2026, 10, 4, 18, 0, tzinfo=IST).timestamp()
+    assert a.in_maintenance(sunday_18 + 60, w) and not a.in_maintenance(sunday_18 - 60, w)
+    assert a.planned_outage(sunday_18 - 5, sunday_18 + 3605, w)  # the whole hour, a few seconds either side
+    assert not a.planned_outage(sunday_18 - 7200, sunday_18 + 60, w)  # mostly outside: a real outage
+    assert not a.planned_outage(sunday_18 + 86400, sunday_18 + 86400 + 3600, w)  # Monday
+    assert not a.planned_outage(sunday_18, sunday_18 + 3600, None)

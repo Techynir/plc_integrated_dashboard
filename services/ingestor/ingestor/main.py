@@ -15,6 +15,8 @@ import httpx
 
 from .alarms import RESTART_GRACE_S, AlarmEngine, Transition, format_message
 from .bursts import BurstSpacer, Held, block_key
+from .pm01 import in_maintenance
+from .process_rules import ProcessEngine
 from .parsing import (
     InvalidMessage,
     TagConfig,
@@ -85,6 +87,9 @@ class Ingestor:
         self.status_tags: dict[str, str] = {}  # device -> tag whose label drives the status
         self.config_changed = asyncio.Event()
         self.spacer = BurstSpacer()
+        self.process = ProcessEngine()
+        self.role_of: dict[tuple[str, str], str] = {}  # (device, tag) -> role, for the process rules
+        self.role_values: dict[str, dict[str, float]] = {}  # device -> latest good value per role
         self.processing = asyncio.Lock()  # bursts are released from a timer as well as the MQTT loop
         self.http = httpx.AsyncClient(timeout=5)
         self._background: set[asyncio.Task] = set()
@@ -128,6 +133,7 @@ class Ingestor:
             if current:  # keep live runtime state, refresh admin-controlled fields
                 current.expected_interval_s = state.expected_interval_s
                 current.poll_s = state.poll_s
+                current.maintenance = state.maintenance
                 current.enabled = state.enabled
                 current.simulated = state.simulated
             else:
@@ -138,6 +144,10 @@ class Ingestor:
         self.tag_cfg = await self.store.load_tag_configs()
         self.register_maps, self.status_tags = await self.store.load_register_maps()
         self.engine.load(await self.store.load_rules(), await self.store.load_active_alarms())
+        inputs = await self.store.load_process_inputs()
+        self.role_of = {(d, info.tag): role for d, inp in inputs.items() for role, info in inp.roles.items()}
+        for device_id, inp in inputs.items():
+            self.process.configure(device_id, inp)
 
     async def config_loop(self) -> None:
         while True:
@@ -327,6 +337,7 @@ class Ingestor:
         transitions = self.engine.on_readings(
             msg.device_id, readings, msg.status, stamp.timestamp(), inhibited
         )
+        transitions += self.evaluate_process(msg.device_id, readings, stamp, dev)
         if was_offline:
             await self.publish_status(dev)
             transitions += self.engine.on_offline_time(msg.device_id, 0)
@@ -335,6 +346,22 @@ class Ingestor:
 
         if len(self.rows) >= FLUSH_MAX_ROWS:
             await self.flush()
+
+    def evaluate_process(self, device_id: str, readings: list, stamp: dt.datetime, dev: DeviceState) -> list:
+        """Process rules run once per poll: on the message that carries the speed (or, without a
+        speed role, on every message), with the latest good value of every other role."""
+        values = self.role_values.setdefault(device_id, {})
+        polled_speed = False
+        for r in readings:
+            role = self.role_of.get((device_id, r.tag))
+            if role and not r.rejected and r.value_num is not None:
+                values[role] = r.value_num
+                polled_speed = polled_speed or role == "speed"
+        if not polled_speed and any(role == "speed" for (d, _), role in self.role_of.items() if d == device_id):
+            return []
+        rules = [r for r in self.engine.rules if r.rule_type == "process" and r.applies_to(device_id)]
+        return self.process.evaluate(device_id, rules, stamp.timestamp(), dev.status == "RUN", values,
+                                     self.engine.is_active)
 
     def derive_status(self, msg: Telemetry, readings: list) -> Telemetry:
         """A labelled status register (e.g. 0=Stopped, 1=Running) sets RUN/STOP/FAULT/..."""
@@ -439,26 +466,33 @@ class Ingestor:
         while True:
             await asyncio.sleep(HOUSEKEEPING_INTERVAL_S)
             try:
-                now = utcnow()
-                for dev in list(self.devices.values()):
-                    if dev.last_seen is None or not dev.enabled:
-                        continue
-                    silent_s = (now - dev.last_seen).total_seconds()
-                    if dev.online and silent_s > dev.offline_after_s:
-                        await self.mark_offline(dev, reason=f"no data for {silent_s:.0f}s")
-                    if not dev.online:
-                        for tr in self.engine.on_offline_time(dev.device_id, silent_s):
-                            await self.apply_transition(tr)
+                await self.check_liveness(utcnow())
                 if time.monotonic() - last_stats >= STATS_INTERVAL_S:
                     last_stats = time.monotonic()
                     await self.publish_stats()
             except Exception:
                 log.exception("housekeeping failed")
 
+    async def check_liveness(self, now: dt.datetime) -> None:
+        """Mark silent devices offline and raise the offline alarm, except during the asset's
+        scheduled maintenance window (asset_config.maintenance) and 2 minutes after it."""
+        for dev in list(self.devices.values()):
+            if dev.last_seen is None or not dev.enabled:
+                continue
+            silent_s = (now - dev.last_seen).total_seconds()
+            planned = dev.maintenance is not None and (
+                in_maintenance(now.timestamp(), dev.maintenance) or in_maintenance(now.timestamp() - 120, dev.maintenance)
+            )
+            if dev.online and silent_s > dev.offline_after_s:
+                await self.mark_offline(dev, reason="scheduled maintenance" if planned else f"no data for {silent_s:.0f}s")
+            if not dev.online and not planned:
+                for tr in self.engine.on_offline_time(dev.device_id, silent_s):
+                    await self.apply_transition(tr)
+
     async def apply_transition(self, tr: Transition) -> None:
         if tr.action == "raise":
-            message = format_message(tr.rule, tr.device_id, tr.value)
-            alarm, created = await self.store.raise_alarm(tr.rule, tr.device_id, message, tr.value)
+            message = tr.explain["what"] if tr.explain else format_message(tr.rule, tr.device_id, tr.value)
+            alarm, created = await self.store.raise_alarm(tr.rule, tr.device_id, message, tr.value, tr.explain)
             self.engine.mark_raised(tr.rule.id, tr.device_id, alarm["id"])
             if created:
                 log.info("alarm raised: %s", message)

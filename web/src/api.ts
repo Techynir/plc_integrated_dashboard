@@ -72,6 +72,9 @@ export interface AssetConfig {
   running_speed_min?: number | null;
   comms_timeout_s?: number | null;
   speed_target?: number | null;
+  /** weekly scheduled maintenance of the data system: no data expected, no offline alarm */
+  maintenance?: { weekday: string; start: string; end: string; tz: string } | null;
+  rules?: unknown;
 }
 
 export interface Device {
@@ -116,10 +119,11 @@ export interface Alarm {
   acked_by: string | null;
   ack_comment: string | null;
   context?: string;
+  explain?: { what: string; why: string; next: string } | null;
   active: boolean;
 }
 
-export type RuleType = "high" | "low" | "equals" | "fault" | "offline";
+export type RuleType = "high" | "low" | "equals" | "fault" | "offline" | "stopped" | "process";
 
 export interface AlarmRule {
   id: number;
@@ -133,6 +137,7 @@ export interface AlarmRule {
   message: string;
   webhook_url: string | null;
   enabled: boolean;
+  managed_by?: string | null;
 }
 
 export interface Credentials {

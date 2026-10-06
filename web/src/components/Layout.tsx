@@ -3,7 +3,7 @@ import { NavLink, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, Alarm } from "../api";
 import { useAuth } from "../auth";
-import { useAsset, mergeLive } from "../hooks";
+import { inMaintenance, mergeLive, useAsset } from "../hooks";
 import { useLiveConnection, useLiveDevice } from "../live";
 import { formatAge, secondsSince } from "../format";
 import { ChangePasswordModal } from "./ChangePassword";
@@ -64,6 +64,14 @@ function LinkPill() {
       <span className="link-pill idle" title="This asset has never sent data">
         <span className="dot" />
         Awaiting PLC link
+      </span>
+    );
+  }
+  if (ws === "open" && !m.online && inMaintenance(asset.asset_config?.maintenance, now)) {
+    return (
+      <span className="link-pill idle" title="Weekly scheduled maintenance of the data system">
+        <span className="dot" />
+        Scheduled maintenance · until {asset.asset_config?.maintenance?.end}
       </span>
     );
   }

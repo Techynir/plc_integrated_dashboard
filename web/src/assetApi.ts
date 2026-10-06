@@ -1,6 +1,7 @@
 /** Types and queries for /assets/{id}/… (the analytics behind the console screens). */
 import { useQuery } from "@tanstack/react-query";
 import { api, Device, History, qs } from "./api";
+import { FindingSpan, Insight } from "./components/rules";
 
 export interface Win {
   start: string;
@@ -92,6 +93,12 @@ export interface QualityData {
   histogram?: { lo: number; hi: number; count: number }[];
   scatter?: { t: number; x: number; y: number }[];
   regression?: { m: number; b: number; r: number; rmse: number; n: number } | null;
+  moisture_model?: { a: number; b: number } | null;
+  predicted?: { t: number; v: number }[];
+  steam_limit?: number | null;
+  warn_limit?: number | null;
+  findings?: FindingSpan[];
+  insights?: { control: Insight[]; steam: Insight[] };
 }
 
 export interface HealthData {
@@ -109,6 +116,9 @@ export interface HealthData {
   load_signature: { t: number; x: number; y: number; residual: number | null }[];
   vibration_vs_speed: { t: number; x: number; y: number; above: boolean }[];
   vibration_regression: { m: number; b: number; rmse: number } | null;
+  rule_model: { m: number; b: number; limit: number } | null;
+  vibration_usual: { usual: number; ref_speed: number; step: number | null } | null;
+  insights: { trend: Insight[]; load: Insight[]; vibration: Insight[] };
 }
 
 export interface CheckItem {
@@ -126,7 +136,8 @@ export interface DataQuality {
   expected_per_tag: number;
   poll_success_1h: number | null;
   comms_lost_s: number;
-  comms_events: { start: number; end: number | null; seconds: number; missing_records: number }[];
+  comms_events: { start: number; end: number | null; seconds: number; missing_records: number; planned?: boolean }[];
+  maintenance?: { weekday: string; start: string; end: string; tz: string } | null;
   bad_reads: number;
   completeness: number | null;
   update_interval: { p50_ms: number | null; p95_ms: number | null; series: [number, number][]; burst: { period_s: number; messages: number } | null };
