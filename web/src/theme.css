@@ -165,11 +165,11 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; font-variant-num
 .topbar {
   grid-column: 1 / -1; position: sticky; top: 0; z-index: 25;
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  padding: 8px 20px; min-height: 53px;
+  padding: 10px 20px; min-height: 78px;
   background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none !important; }
-.brand .logo { height: 34px; width: auto; display: block; }
+.brand .logo { height: 58px; width: auto; display: block; }
 :root[data-theme="dark"] .brand .logo,
 :root:not([data-theme="light"]) .brand .logo { background: #fff; border-radius: 4px; padding: 3px 8px; }
 .brand b { font-family: var(--font-cond); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; color: var(--navy); }
