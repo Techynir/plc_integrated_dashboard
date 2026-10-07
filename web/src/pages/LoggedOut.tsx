@@ -5,8 +5,7 @@ export function LoggedOut() {
     <div className="login-wrap">
       <div className="card login-card" role="status">
         <div className="brand" style={{ padding: 0 }}>
-          <img src="/favicon.svg" alt="" style={{ width: 30, height: 30 }} />
-          <h1>PLC Dashboard</h1>
+          <img className="logo" src="/Numerique2.png" alt="Numerique" style={{ height: 40 }} />
         </div>
         <h2>You have been signed out</h2>
         <p className="secondary" style={{ margin: 0 }}>

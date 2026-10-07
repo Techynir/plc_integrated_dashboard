@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -51,10 +52,26 @@ async def list_alarms(
     return [alarm_dict(r) for r in rows]
 
 
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 @router.get("/alarms/summary")
-async def alarm_summary(device_id: str | None = None, hours: float = Query(24, gt=0, le=24 * 31),
-                        _: CurrentUser = Depends(viewer)) -> dict:
-    """Tiles, top sources and 24 h history for the Alarms screen."""
+async def alarm_summary(
+    device_id: str | None = None,
+    hours: float = Query(24, gt=0, le=24 * 31),
+    start: datetime | None = Query(None, alias="from"),
+    end: datetime | None = Query(None, alias="to"),
+    _: CurrentUser = Depends(viewer),
+) -> dict:
+    """Tiles, top sources and history for the Alarms screen.
+
+    ``from`` and ``to`` select the event history (a day, a clock range, or a shift).
+    Active counts stay current. Without a range, history is the last ``hours``.
+    """
+    if (start is None) != (end is None):
+        raise HTTPException(400, "from and to must be set together")
+    span_h = hours
     args: list = [hours]
     dev_filter = ""
     if device_id:
@@ -70,11 +87,27 @@ async def alarm_summary(device_id: str | None = None, hours: float = Query(24, g
         """,
         int(hours) if hours >= 1 else 1, *args[1:],
     )
-    recent = await db.pool().fetch(
-        f"SELECT {ALARM_COLUMNS} FROM alarms WHERE raised_at > now() - make_interval(secs => $1 * 3600) {dev_filter} "
-        f"ORDER BY raised_at DESC LIMIT 500",
-        float(hours), *args[1:],
-    )
+    if start is not None and end is not None:
+        start, end = _aware(start), _aware(end)
+        span_h = (end - start).total_seconds() / 3600
+        if span_h <= 0 or span_h > 24 * 31:
+            raise HTTPException(400, "range must be between 0 and 31 days")
+        range_args: list = [start, end]
+        range_filter = ""
+        if device_id:
+            range_args.append(device_id)
+            range_filter = f"AND device_id = ${len(range_args)}"
+        recent = await db.pool().fetch(
+            f"SELECT {ALARM_COLUMNS} FROM alarms WHERE raised_at >= $1 AND raised_at < $2 {range_filter} "
+            f"ORDER BY raised_at DESC LIMIT 2000",
+            *range_args,
+        )
+    else:
+        recent = await db.pool().fetch(
+            f"SELECT {ALARM_COLUMNS} FROM alarms WHERE raised_at > now() - make_interval(secs => $1 * 3600) {dev_filter} "
+            f"ORDER BY raised_at DESC LIMIT 500",
+            float(hours), *args[1:],
+        )
     per_hour: dict[str, int] = {}
     sources: dict[str, int] = {}
     for r in recent:
@@ -83,7 +116,7 @@ async def alarm_summary(device_id: str | None = None, hours: float = Query(24, g
     return {
         **dict(row),
         "count": len(recent),
-        "per_hour_avg": len(recent) / hours,
+        "per_hour_avg": len(recent) / span_h,
         "peak_hour": max(per_hour.values(), default=0),
         "top_sources": [{"source": k, "count": v} for k, v in sorted(sources.items(), key=lambda kv: -kv[1])[:10]],
         "history": [alarm_dict(r) for r in recent],

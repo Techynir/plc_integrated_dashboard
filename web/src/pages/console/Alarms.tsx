@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alarm, api, qs } from "../../api";
@@ -12,6 +12,51 @@ import { HourBars } from "../../components/charts";
 import { ErrorText, Loading, useNow } from "../../components/ui";
 import { orderTags } from "./Live";
 import { ExplainLines } from "../../components/rules";
+
+/** Plant shifts, local time. C runs from 22:00 through 06:00 the next morning. */
+const SHIFTS = [
+  { key: "A", label: "A · 06–14", from: "06:00", to: "14:00" },
+  { key: "B", label: "B · 14–22", from: "14:00", to: "22:00" },
+  { key: "C", label: "C · 22–06", from: "22:00", to: "06:00" },
+] as const;
+
+type ShiftKey = (typeof SHIFTS)[number]["key"];
+
+function ymd(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function atLocal(date: string, time: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
+}
+
+/** One calendar day, a clock range on that day, or a shift. A clock that passes midnight ends the next morning. */
+function customWindow(date: string, timeFrom: string, timeTo: string): { from: number; to: number } | null {
+  if (!date) return null;
+  if (!timeFrom && !timeTo) {
+    const from = atLocal(date, "00:00");
+    return { from, to: from + 86_400_000 };
+  }
+  const from = atLocal(date, timeFrom || "00:00");
+  let to = atLocal(date, timeTo || "23:59");
+  if (to <= from) to += 86_400_000;
+  return { from, to };
+}
+
+function sourceName(a: { rule_name: string; message?: string }): string {
+  return a.rule_name || a.message || "Alarm";
+}
+
+function inWindow(iso: string | null | undefined, span: { from: number; to: number } | null): boolean {
+  if (!span) return true;
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return t >= span.from && t < span.to;
+}
 
 interface AlarmSummary {
   active_critical: number;
@@ -106,13 +151,27 @@ export function Alarms() {
   const [params] = useSearchParams();
   const focusTag = params.get("tag");
   const [scope, setScope] = useState<"asset" | "all">("asset");
+  const [date, setDate] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
+  const [shift, setShift] = useState<ShiftKey | "">("");
+  const [source, setSource] = useState("");
   const detail = useDevice(asset?.device_id);
   const live = useLiveDevice(asset?.device_id);
   const deviceId = scope === "asset" ? asset?.device_id : undefined;
+  const range = customWindow(date, timeFrom, timeTo);
   const summary = useQuery({
-    queryKey: ["alarms", "summary", deviceId],
-    queryFn: () => api<AlarmSummary>(`/alarms/summary${qs({ device_id: deviceId, hours: 24 })}`),
-    refetchInterval: 15_000,
+    queryKey: ["alarms", "summary", deviceId, range?.from ?? "24h", range?.to ?? ""],
+    queryFn: () =>
+      api<AlarmSummary>(
+        `/alarms/summary${qs({
+          device_id: deviceId,
+          hours: 24,
+          from: range ? new Date(range.from).toISOString() : undefined,
+          to: range ? new Date(range.to).toISOString() : undefined,
+        })}`,
+      ),
+    refetchInterval: !range || range.to > Date.now() ? 15_000 : false,
   });
   const active = useQuery({
     queryKey: ["alarms", "active", deviceId ?? "all"],
@@ -143,17 +202,82 @@ export function Alarms() {
     if (!focusTag) return;
     document.getElementById(`fault-${focusTag}`)?.scrollIntoView({ block: "center" });
   }, [focusTag, faultKey]);
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of s?.history ?? []) counts.set(sourceName(a), (counts.get(sourceName(a)) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [s?.history]);
+  const historyRows = (s?.history ?? []).filter((a) => !source || sourceName(a) === source);
   const hours = (() => {
     const out = new Map<number, number>();
-    const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
-    for (let i = 23; i >= 0; i--) out.set(h0 - i * 3600_000, 0);
-    for (const a of s?.history ?? []) {
+    if (range) {
+      const start = Math.floor(range.from / 3600_000) * 3600_000;
+      const last = Math.max(start, range.to - 1);
+      for (let h = start; h <= last; h += 3600_000) out.set(h, 0);
+    } else {
+      const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
+      for (let i = 23; i >= 0; i--) out.set(h0 - i * 3600_000, 0);
+    }
+    for (const a of historyRows) {
       const h = Math.floor(new Date(a.raised_at).getTime() / 3600_000) * 3600_000;
       if (out.has(h)) out.set(h, (out.get(h) ?? 0) + 1);
     }
     return [...out].map(([h, count]) => ({ h, count }));
   })();
-  const maxSrc = Math.max(1, ...(s?.top_sources ?? []).map((x) => x.count));
+  const listedSources = source && !sourceCounts.slice(0, 10).some(([name]) => name === source)
+    ? [[source, sourceCounts.find(([name]) => name === source)?.[1] ?? 0] as [string, number], ...sourceCounts.slice(0, 9)]
+    : sourceCounts.slice(0, 10);
+  const maxSrc = Math.max(1, ...listedSources.map(([, count]) => count));
+  const nowMs = Date.now();
+  const dayOfData = ymd(asset?.last_seen ? new Date(asset.last_seen).getTime() : nowMs);
+  const showFaults = !range || (nowMs >= range.from && nowMs < range.to);
+  const activeRows = (active.data ?? []).filter((a) => inWindow(a.raised_at, range) && (!source || sourceName(a) === source));
+  const activeSourceKey = (active.data ?? []).map((a) => sourceName(a)).join("\n");
+  useEffect(() => {
+    if (!source || !s) return;
+    const stillThere = s.history.some((a) => sourceName(a) === source) || activeSourceKey.split("\n").includes(source);
+    if (!stillThere) setSource("");
+  }, [source, s, activeSourceKey]);
+  const sourceTags = new Set(
+    [...(s?.history ?? []), ...(active.data ?? [])].flatMap((a) => (!source || sourceName(a) === source) && a.tag ? [a.tag] : []),
+  );
+  const shownFaults = faults.filter((f) => !source || sourceTags.has(f.tag) || f.text.toLowerCase().includes(source.toLowerCase()));
+  const raisedCount = source ? historyRows.length : (s?.count ?? 0);
+  const raisedAvg = source ? raisedCount / (range ? Math.max((range.to - range.from) / 3600_000, 1 / 60) : 24) : (s?.per_hour_avg ?? 0);
+  const raisedPeak = source ? Math.max(0, ...hours.map((h) => h.count)) : (s?.peak_hour ?? 0);
+  const critCount = source ? activeRows.filter((a) => a.severity === "critical").length : (s?.active_critical ?? 0);
+  const warnCount = source ? activeRows.filter((a) => a.severity !== "critical").length : (s?.active_warning ?? 0);
+  const unackedShown = source ? activeRows.filter((a) => !a.acked_at).length : unackedActive;
+  const rangeText = !range
+    ? "last 24 h"
+    : shift
+      ? `shift ${shift} · ${date}`
+      : timeFrom || timeTo
+        ? `${date} ${timeFrom || "00:00"}–${timeTo || "24:00"}`
+        : date;
+  const clearRange = () => {
+    setDate("");
+    setTimeFrom("");
+    setTimeTo("");
+    setShift("");
+  };
+  const useShift = (key: ShiftKey) => {
+    const chosen = SHIFTS.find((x) => x.key === key)!;
+    setShift(key);
+    setDate((d) => d || dayOfData);
+    setTimeFrom(chosen.from);
+    setTimeTo(chosen.to);
+  };
+  const useDate = (value: string) => {
+    setDate(value);
+    if (!value) clearRange();
+  };
+  const useTime = (which: "from" | "to", value: string) => {
+    setShift("");
+    if (which === "from") setTimeFrom(value);
+    else setTimeTo(value);
+    setDate((d) => d || dayOfData);
+  };
 
   return (
     <div className="screen">
@@ -179,19 +303,58 @@ export function Alarms() {
           </div>
         }
       />
+      <section className="panel">
+      <div className="toolbar">
+        <div className="segmented" role="group" aria-label="Time range">
+          <button type="button" className={!range ? "on" : ""} aria-pressed={!range} onClick={clearRange}>
+            24 h
+          </button>
+        </div>
+        <label className="filter">
+          Date
+          <input type="date" value={date} max={ymd(nowMs)} onChange={(e) => useDate(e.target.value)} />
+        </label>
+        <label className="filter">
+          From
+          <input type="time" value={timeFrom} onChange={(e) => useTime("from", e.target.value)} />
+        </label>
+        <label className="filter">
+          To
+          <input type="time" value={timeTo} onChange={(e) => useTime("to", e.target.value)} />
+        </label>
+        <div className="segmented" role="group" aria-label="Shift">
+          {SHIFTS.map((sft) => (
+            <button key={sft.key} type="button" className={shift === sft.key ? "on" : ""} aria-pressed={shift === sft.key} onClick={() => useShift(sft.key)}>
+              {sft.label}
+            </button>
+          ))}
+        </div>
+        <label className="filter">
+          Source
+          <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Alarm source">
+            <option value="">All sources</option>
+            {sourceCounts.map(([name, count]) => (
+              <option key={name} value={name}>
+                {name} ({count})
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      </section>
       <ErrorText error={ackAll.error || summary.error} />
       {summary.isLoading ? (
         <Loading />
       ) : (
         <div className="tiles">
-          <Tile k="Active critical" v={s?.active_critical ?? 0} cls={s?.active_critical ? "crit" : undefined} />
-          <Tile k="Active warning" v={s?.active_warning ?? 0} cls={s?.active_warning ? "warn" : undefined} />
-          <Tile k="Unacknowledged" v={unackedActive} s={`${s?.unacked ?? 0} incl. cleared`} cls={unackedActive ? "warn" : undefined} />
-          <Tile k="Raised in 24 h" v={s?.count ?? 0} s={`avg ${fmtNum(s?.per_hour_avg ?? 0, 1)}/h · peak ${s?.peak_hour ?? 0}/h`} />
+          <Tile k="Active critical" v={critCount} cls={critCount ? "crit" : undefined} />
+          <Tile k="Active warning" v={warnCount} cls={warnCount ? "warn" : undefined} />
+          <Tile k="Unacknowledged" v={unackedShown} s={source ? source : `${s?.unacked ?? 0} incl. cleared`} cls={unackedShown ? "warn" : undefined} />
+          <Tile k={range || source ? "Raised in range" : "Raised in 24 h"} v={raisedCount} s={`${source ? `${source} · ` : ""}${rangeText} · avg ${fmtNum(raisedAvg, 1)}/h · peak ${raisedPeak}/h`} />
         </div>
       )}
-      <Panel title="Active alarms" sub={`${active.data?.length ?? 0} active · newest first`}>
-        {faults.length > 0 && (
+      <Panel title="Active alarms" sub={`${activeRows.length} active · newest first`}>
+        {showFaults && shownFaults.length > 0 && (
           <div className="table-wrap">
             <table>
               <thead>
@@ -204,7 +367,7 @@ export function Alarms() {
                 </tr>
               </thead>
               <tbody>
-                {faults.map((f) => (
+                {shownFaults.map((f) => (
                   <tr key={f.tag} id={`fault-${f.tag}`} className={f.tag === focusTag ? "hit" : undefined}>
                     <td><Chip cls={f.cls}>{f.label}</Chip></td>
                     <td style={{ fontWeight: 600 }}>{f.text}</td>
@@ -217,36 +380,43 @@ export function Alarms() {
             </table>
           </div>
         )}
-        {active.data && active.data.length > 0 ? (
-          <AlarmTable alarms={active.data} showDevice={scope === "all"} focusTag={focusTag} />
-        ) : faults.length === 0 ? (
-          <div className="empty">No active alarms.</div>
+        {activeRows.length > 0 ? (
+          <AlarmTable alarms={activeRows} showDevice={scope === "all"} focusTag={focusTag} />
+        ) : !showFaults || shownFaults.length === 0 ? (
+          <div className="empty">{source ? `No active alarms from ${source}.` : range ? "No active alarms in this range." : "No active alarms."}</div>
         ) : null}
       </Panel>
       <div className="grid g-7-5">
-        <Panel title="Alarms raised per hour" sub="last 24 h">
+        <Panel title="Alarms raised per hour" sub={source ? `${source} · ${rangeText}` : rangeText}>
           <HourBars hours={hours} />
         </Panel>
-        <Panel title="Top alarm sources" sub="last 24 h">
-          {s?.top_sources.length ? (
-            <div className="bars">
-              {s.top_sources.map((x) => (
-                <div className="bar" key={x.source}>
-                  <span title={x.source}>{x.source}</span>
+        <Panel title="Top alarm sources" sub={source ? `${source} · click again to clear` : `${rangeText} · click a source`}>
+          {listedSources.length ? (
+            <div className="bars" role="group" aria-label="Alarm sources">
+              {listedSources.map(([name, count]) => (
+                <button
+                  type="button"
+                  className={source === name ? "bar on" : "bar"}
+                  key={name}
+                  aria-pressed={source === name}
+                  title={source === name ? `Clear ${name}` : `Show ${name}`}
+                  onClick={() => setSource((cur) => (cur === name ? "" : name))}
+                >
+                  <span>{name}</span>
                   <div className="tr">
-                    <i style={{ width: `${(x.count / maxSrc) * 100}%` }} />
+                    <i style={{ width: `${(count / maxSrc) * 100}%` }} />
                   </div>
-                  <span className="n">{x.count}</span>
-                </div>
+                  <span className="n">{count}</span>
+                </button>
               ))}
             </div>
           ) : (
-            <div className="empty">No alarms in the last 24 hours.</div>
+            <div className="empty">{range ? "No alarms in this range." : "No alarms in the last 24 hours."}</div>
           )}
         </Panel>
       </div>
-      <Panel title="Event history" sub="raised in the last 24 h">
-        {s?.history.length ? (
+      <Panel title="Event history" sub={source ? `${source} · ${rangeText}` : range ? `raised ${rangeText}` : "raised in the last 24 h"}>
+        {historyRows.length ? (
           <div className="table-wrap" style={{ maxHeight: 420, overflowY: "auto" }}>
             <table>
               <thead>
@@ -262,7 +432,7 @@ export function Alarms() {
                 </tr>
               </thead>
               <tbody>
-                {s.history.map((a) => (
+                {historyRows.map((a) => (
                   <tr key={a.id} className={focusTag && a.tag === focusTag ? "hit" : undefined}>
                     <td className="small nowrap">{fmtDT(a.raised_at)}</td>
                     <td>{sevChip(a)}</td>
@@ -281,7 +451,7 @@ export function Alarms() {
             </table>
           </div>
         ) : (
-          <div className="empty">No events in the last 24 hours.</div>
+          <div className="empty">{source ? `No events from ${source}.` : range ? "No events in this range." : "No events in the last 24 hours."}</div>
         )}
       </Panel>
     </div>
