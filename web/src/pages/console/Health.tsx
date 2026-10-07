@@ -80,7 +80,6 @@ export function Health() {
       <ScreenHead
         eyebrow="Analytics · condition monitoring"
         title="Asset health · main drive & bearing"
-        desc="A 0–100 score built from vibration, motor load against speed, and dryer steam supply. Projections are indicative and need months of real data before being used for maintenance planning."
       />
       {h.error && <ErrorText error={h.error} />}
       {!d ? (

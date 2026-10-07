@@ -210,7 +210,6 @@ export function AdminDevices() {
       <div className="page-header">
         <div>
           <h1>Devices</h1>
-          <div className="sub">Register PLCs and issue their MQTT credentials</div>
         </div>
         <div className="row">
           <a className="btn" href="/api/v1/broker/ca.crt" download>

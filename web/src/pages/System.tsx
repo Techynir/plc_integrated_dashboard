@@ -34,7 +34,6 @@ export function System() {
       <div className="page-header">
         <div>
           <h1>System health</h1>
-          <div className="sub">Broker, ingestion pipeline and storage</div>
         </div>
       </div>
       <ErrorText error={stats.error} />

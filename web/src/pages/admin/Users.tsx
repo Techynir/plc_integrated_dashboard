@@ -100,7 +100,6 @@ export function AdminUsers() {
       <div className="page-header">
         <div>
           <h1>Users</h1>
-          <div className="sub">Who can sign in, and what they can do</div>
         </div>
         <button className="primary" onClick={() => setEditing("new")}>
           Invite user
@@ -172,7 +171,6 @@ export function AdminAudit() {
       <div className="page-header">
         <div>
           <h1>Audit log</h1>
-          <div className="sub">Sign-ins, configuration changes, alarm acknowledgements and exports</div>
         </div>
       </div>
       <div className="card">

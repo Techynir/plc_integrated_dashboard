@@ -37,7 +37,6 @@ export function Overview() {
       <ScreenHead
         eyebrow="Site · Plant"
         title="Plant overview"
-        desc="Every asset on one page: live state, health, alarms and whether its data can be trusted."
       />
       <div className="tiles">
         <Tile k="Assets connected" v={<>{connected}<small> / {assets.length}</small></>} s={`${connected} live · ${assets.length - connected - awaiting} no data · ${awaiting} awaiting PLC`} />

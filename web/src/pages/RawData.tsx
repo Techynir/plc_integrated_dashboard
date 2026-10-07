@@ -60,7 +60,6 @@ export function RawData() {
       <div className="page-header">
         <div>
           <h1>Raw data</h1>
-          <div className="sub">Messages exactly as received from the PLCs over MQTT, newest first · kept 7 days</div>
         </div>
         <button className={live ? "primary" : ""} onClick={() => setLive((l) => !l)}>
           {live ? "Live ● pause" : "Paused ▶ resume"}

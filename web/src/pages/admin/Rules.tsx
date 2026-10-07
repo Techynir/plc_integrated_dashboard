@@ -205,7 +205,6 @@ export function AdminRules() {
       <div className="page-header">
         <div>
           <h1>Alarm rules</h1>
-          <div className="sub">Conditions evaluated on every incoming message</div>
         </div>
         <button className="primary" onClick={() => setEditing("new")}>
           New rule

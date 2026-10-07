@@ -132,7 +132,6 @@ export function Trends() {
       <ScreenHead
         eyebrow={`Historian · ${asset.name || asset.device_id}`}
         title="Trends & historian"
-        desc="Every tag on its own scale and a shared time axis. Hover to read all values at one instant. Communication gaps are hatched, not drawn as zero."
       />
       {anchored && (
         <div className="alert comms">

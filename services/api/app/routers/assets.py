@@ -6,11 +6,14 @@ steam_pressure, moisture, vibration. A screen whose roles are not assigned says 
 guessing.
 """
 
+import csv
 import datetime as dt
+import io
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import analytics as an
@@ -161,6 +164,57 @@ def window_info(start: float, end: float, anchored: bool) -> dict:
     return {"start": iso(start), "end": iso(end), "anchored": anchored}
 
 
+def bound_range(asset: dict, start: dt.datetime | None, end: dt.datetime | None, hours: float = 24) -> tuple[float, float]:
+    """[start, end) for a stoppage export. No bounds means the same 24 h window as the screen."""
+    if start is None and end is None:
+        a, b, _ = window(asset, hours, None)
+        return a, b
+    if start is None or end is None:
+        raise HTTPException(400, "from and to must be set together")
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=dt.timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=dt.timezone.utc)
+    a, b = epoch(start), epoch(end)
+    if b <= a or b - a > 7 * 24 * 3600:
+        raise HTTPException(400, "range must be between 0 and 7 days")
+    return a, b
+
+
+async def annotate_stops(device_id: str, stops: list[dict], start: float) -> list[dict]:
+    reasons = {
+        round(epoch(r["started_at"]), 3): r["reason"]
+        for r in await db.pool().fetch(
+            "SELECT started_at, reason FROM stoppage_reasons WHERE device_id = $1 AND started_at >= to_timestamp($2)",
+            device_id, start - 3600,
+        )
+    }
+    zone = tz()
+    for s in stops:
+        s["reason"] = reasons.get(round(s["start"], 3), "Unclassified")
+        s["shift"] = an.shift_of(s["start"], zone)
+    return stops
+
+
+async def stops_between(device_id: str, start: float, stop: float) -> list[dict]:
+    asset = await load_asset(device_id)
+    segs, _, _ = await machine_segments(asset, start, stop)
+    return await annotate_stops(device_id, an.stop_events(segs, stop), start)
+
+
+def duration_text(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    if s < 60:
+        return f"{s} s"
+    m, sec = divmod(s, 60)
+    if m < 60:
+        return f"{m} min {sec:02d} s"
+    h, minute = divmod(m, 60)
+    if h < 48:
+        return f"{h} h {minute:02d} min"
+    return f"{h // 24} d {h % 24} h"
+
+
 def period_text(hours: float) -> str:
     if hours >= 48 and hours % 24 == 0:
         return f"in the last {int(hours // 24)} days"
@@ -250,18 +304,8 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
     start, stop, anchored = window(asset, hours, end)
     segs, _, source = await machine_segments(asset, start, stop)
     tot = an.totals(segs)
-    stops = an.stop_events(segs, stop)
-    reasons = {
-        round(epoch(r["started_at"]), 3): r["reason"]
-        for r in await db.pool().fetch(
-            "SELECT started_at, reason FROM stoppage_reasons WHERE device_id = $1 AND started_at >= to_timestamp($2)",
-            device_id, start - 3600,
-        )
-    }
+    stops = await annotate_stops(device_id, an.stop_events(segs, stop), start)
     zone = tz()
-    for s in stops:
-        s["reason"] = reasons.get(round(s["start"], 3), "Unclassified")
-        s["shift"] = an.shift_of(s["start"], zone)
 
     speed_tag, moist_tag = role_tag(asset, "speed"), role_tag(asset, "moisture")
     speed_run = an.in_states(await series(device_id, speed_tag and speed_tag["tag"], start, stop), segs, {"run"})
@@ -349,6 +393,49 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
 
 class ReasonIn(BaseModel):
     reason: str = Field(min_length=1, max_length=80)
+
+
+@router.get("/{device_id}/stoppages")
+async def list_stoppages(
+    device_id: str,
+    start: dt.datetime | None = Query(None, alias="from"),
+    end: dt.datetime | None = Query(None, alias="to"),
+    _: CurrentUser = Depends(viewer),
+) -> dict:
+    """Stops in a date/time range. Without from/to, the same 24 h window as Performance."""
+    asset = await load_asset(device_id)
+    a, b = bound_range(asset, start, end)
+    stops = await stops_between(device_id, a, b)
+    return {"stops": stops, "from": iso(a), "to": iso(b)}
+
+
+@router.get("/{device_id}/stoppages.csv")
+async def export_stoppages(
+    device_id: str,
+    start: dt.datetime | None = Query(None, alias="from"),
+    end: dt.datetime | None = Query(None, alias="to"),
+    user: CurrentUser = Depends(viewer),
+) -> Response:
+    """Stoppage log for the chosen range, newest first."""
+    asset = await load_asset(device_id)
+    a, b = bound_range(asset, start, end)
+    stops = await stops_between(device_id, a, b)
+    await db.audit(user.email, "export.stoppages", device_id, {"from": iso(a), "to": iso(b), "stops": len(stops)})
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["start", "end", "duration_s", "duration", "shift", "reason"])
+    for s in reversed(stops):
+        writer.writerow([
+            iso(s["start"]),
+            iso(s["end"]) or "",
+            f"{s['seconds']:.1f}",
+            "ongoing" if s["end"] is None else duration_text(s["seconds"]),
+            s["shift"],
+            s["reason"],
+        ])
+    stamp = dt.datetime.fromtimestamp(a, tz()).strftime("%Y%m%dT%H%M")
+    filename = f"{device_id}-stoppages-{stamp}.csv"
+    return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.put("/{device_id}/stoppages/{started_at}")

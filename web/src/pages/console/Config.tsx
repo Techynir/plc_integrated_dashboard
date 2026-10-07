@@ -289,7 +289,6 @@ export function Config() {
       <ScreenHead
         eyebrow={`Platform · ${asset.device_id}`}
         title="Asset configuration"
-        desc={readOnly ? "How this asset is connected and mapped. Only admins can change it." : "Connection details, which tag plays which role, normal ranges and alarm limits, and the Modbus register map."}
       />
       <ConnectionForm d={detail.data} readOnly={readOnly} />
       <TagTable d={detail.data} readOnly={readOnly} />

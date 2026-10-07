@@ -284,7 +284,6 @@ export function Alarms() {
       <ScreenHead
         eyebrow="Operations"
         title="Alarms & events"
-        desc="Limit alarms wait 3 s before raising and clearing, and most are held off while the machine is stopped or within 90 s of a restart, so a stop does not flood the list."
         actions={
           <div className="row">
             <div className="segmented" role="group" aria-label="Scope">

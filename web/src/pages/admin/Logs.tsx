@@ -106,7 +106,6 @@ export function AdminLogs() {
       <div className="page-header">
         <div>
           <h1>Logs</h1>
-          <div className="sub">Output of every component, from Google Cloud Logging (kept 30 days), newest first</div>
         </div>
         <button className={live ? "primary" : ""} onClick={() => setLive((l) => !l)} title="Refresh every 10 seconds">
           {live ? "Live ● pause" : "Live ▶"}

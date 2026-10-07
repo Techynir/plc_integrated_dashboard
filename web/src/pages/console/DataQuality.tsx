@@ -120,7 +120,6 @@ export function DataQuality() {
       <ScreenHead
         eyebrow={`Platform · ${asset.device_id}`}
         title="Data quality & link"
-        desc="Can the numbers be trusted? Completeness per signal, how regularly records arrive, every communication outage, and the raw register values for commissioning checks."
         actions={
           <div className="segmented" role="group" aria-label="Time range">
             {RANGES.map((r) => (

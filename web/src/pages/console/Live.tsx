@@ -103,7 +103,6 @@ export function Live({ embedded = false }: { embedded?: boolean }) {
         <ScreenHead
           eyebrow={`${d.asset_type || "Asset"} · ${d.name || d.device_id}`}
           title="Live view"
-          desc="Values from the PLC as they arrive. Grey means normal. Colour appears only when something needs attention."
         />
       )}
       <div className={`banner${state === "stopped" ? " stopped" : state === "comms" || state === "awaiting" ? " comms" : hasCrit ? " alarm" : " running"}`} role="status" aria-live="polite">

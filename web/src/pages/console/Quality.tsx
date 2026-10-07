@@ -37,7 +37,6 @@ export function Quality() {
       <ScreenHead
         eyebrow={`Analytics · ${asset.device_id}`}
         title="Process quality"
-        desc="Paper moisture while the machine is running: a control chart of 1-minute averages (I-MR), its spread against the normal range, and how it follows dryer steam pressure."
         actions={
           <div className="segmented" role="group" aria-label="Time range">
             {RANGES.map((r) => (
