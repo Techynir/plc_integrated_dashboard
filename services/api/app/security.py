@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 
 import bcrypt
 import jwt
@@ -62,3 +63,13 @@ def clear_session_cookie(response) -> None:
 
 def role_allows(role: str, required: str) -> bool:
     return ROLE_RANK.get(role, -1) >= ROLE_RANK[required]
+
+
+USER_ID_PATTERN = r"^[A-Za-z]{2,4}[0-9]{3,6}$"  # e.g. AD4127 (admin), OP2386 (operator)
+LOGIN_PATTERN = rf"({USER_ID_PATTERN})|(^[^@\s]+@[^@\s]+\.[^@\s]+$)"
+
+
+def normalize_login(value: str) -> str:
+    """The stored form of a login: a user ID in capitals, an e-mail address in lower case."""
+    v = value.strip()
+    return v.upper() if re.match(USER_ID_PATTERN, v) else v.lower()

@@ -378,7 +378,7 @@ async def main() -> None:
             await publish(password, [rec(spd, 3.0)])
             await asyncio.sleep(1)
         p = (await http.get(f"{a}/performance", params={"hours": 1})).json()
-        check(len(p["stops"]) == 1 and 0 < p["availability"] < 1 and len(p["shifts"]) == 3 and p["avg_speed_running"] > 270,
+        check(len(p["stops"]) == 1 and 0 < p["availability"] < 1 and len(p["shifts"]) == 2 and p["avg_speed_running"] > 270,
               "performance: stop detected from speed")
         r = await http.put(f"{a}/stoppages/{p['stops'][0]['start']}", json={"reason": "Web break"})
         p = (await http.get(f"{a}/performance", params={"hours": 1})).json()

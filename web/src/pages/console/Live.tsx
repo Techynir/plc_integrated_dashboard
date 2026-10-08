@@ -171,10 +171,12 @@ export function Live({ embedded = false }: { embedded?: boolean }) {
             lanes={lanesFor(tags, hist.data?.series, (t) => (comms ? "comms lost" : `${formatValue(m.value(t), t)} ${t.unit}`)).map((lane) => {
               const t = tags.find((x) => x.tag === lane.key)!;
               const fault = tagFault(t, m.value(t), { comms, bad: m.quality(t) === 2 });
+              // while stopped, values held off by their alarms (crawl speed, standby steam) are not faults
+              const held = !!fault && !comms && m.quality(t) !== 2 && running === false && !!t.suppress_when_stopped;
               return {
                 ...lane,
-                verdict: fault ? ("NG" as const) : ("OK" as const),
-                verdictHref: fault ? `/alarms?${new URLSearchParams({ asset: d.device_id, tag: t.tag })}` : undefined,
+                verdict: held ? ("STOP" as const) : fault ? ("NG" as const) : ("OK" as const),
+                verdictHref: fault && !held ? `/alarms?${new URLSearchParams({ asset: d.device_id, tag: t.tag })}` : undefined,
               };
             })}
             from={end - span}

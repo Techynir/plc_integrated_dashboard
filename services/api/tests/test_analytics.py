@@ -38,14 +38,15 @@ def test_in_states_and_minute_means():
     assert a.minute_means([(0, 1.0), (30, 3.0), (61, 5.0)]) == [(0.0, 2.0), (60.0, 5.0)]
 
 
-def test_shifts_in_plant_time():
-    t = dt.datetime(2026, 9, 28, 13, 59, tzinfo=IST).timestamp()
+def test_two_twelve_hour_shifts_in_plant_time():
+    t = dt.datetime(2026, 9, 28, 17, 59, tzinfo=IST).timestamp()
     assert a.shift_of(t, IST) == "A" and a.shift_of(t + 60, IST) == "B"
-    assert a.shift_of(dt.datetime(2026, 9, 28, 23, 0, tzinfo=IST).timestamp(), IST) == "C"
-    assert a.shift_of(dt.datetime(2026, 9, 28, 3, 0, tzinfo=IST).timestamp(), IST) == "C"
+    assert a.shift_of(dt.datetime(2026, 9, 28, 23, 0, tzinfo=IST).timestamp(), IST) == "B"
+    assert a.shift_of(dt.datetime(2026, 9, 28, 3, 0, tzinfo=IST).timestamp(), IST) == "B"
+    assert a.shift_of(dt.datetime(2026, 9, 28, 6, 0, tzinfo=IST).timestamp(), IST) == "A"
     start = dt.datetime(2026, 9, 28, 5, 0, tzinfo=IST).timestamp()
     cuts = a.shift_boundaries(start, start + 24 * 3600, IST)
-    assert [dt.datetime.fromtimestamp(c, IST).hour for c in cuts] == [6, 14, 22]
+    assert [dt.datetime.fromtimestamp(c, IST).hour for c in cuts] == [6, 18]
     pieces = a.split_segments([a.Segment("run", start, start + 3 * 3600)], cuts)
     assert [(p.end - p.start) / 3600 for p in pieces] == [1.0, 2.0]
 

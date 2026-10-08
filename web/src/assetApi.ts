@@ -58,8 +58,12 @@ export interface Performance {
   longest_stop_s: number | null;
   avg_speed_running: number | null;
   speed_target: number | null;
-  /** How close actual readings are to their rated values, 0–1. 1 means actual equals rated. */
+  /** Speed while running ÷ rated speed (above 1 when the crew runs faster than rated). */
   performance: number | null;
+  /** availability × performance */
+  overall: number | null;
+  /** lowest and highest speed ÷ rated while running in the window */
+  performance_range: { min: number; max: number } | null;
   rated_actual: { tag: string; label: string; unit: string; actual: number; rated: number; ratio: number }[];
   speed_tag: PublicTag | null;
   segments: { state: "run" | "stop" | "comms"; start: number; end: number }[];
@@ -72,6 +76,7 @@ export interface Performance {
     availability: number | null;
     stops: number;
     avg_speed: number | null;
+    performance: number | null;
     moisture_in_range: number | null;
     alarms: number;
   }[];

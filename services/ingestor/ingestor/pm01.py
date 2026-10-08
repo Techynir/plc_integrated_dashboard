@@ -8,22 +8,43 @@ live simulator resumes where the history (or its own last checkpoint) ended.
 
 What it contains:
 
-1. PLC program: a port of the "PM-01 Demo Data: Simple PLC Guide" Step 5 program (its RND
-   function, linked values, about 8 stops a day, problem events per driver via FB_EVENT), with:
-   - problem events 1-9 h apart, each with its own ramp rate and length;
-   - some stops caused by the process (a wet sheet breaks, a critical overload trips the drive);
-   - a worn or vibrating bearing adds friction current; moisture over-dries after a steam recovery.
-2. Realistic signals: controlled values hold steady. Speed (drive), steam pressure (controller) and
-   vibration (an RMS value, averaged by the sensor) barely move at a steady speed; every value is
-   rounded to its sensor's resolution, so a reading repeats for long stretches (vibration 3.51,
-   3.51, 3.52 ...), but never freezes completely.
-3. Bearing life (bearing_baseline): vibration at full speed follows the bearing, not a random walk:
-   a slow, accelerating wear over a 150-day bearing life (then a new bearing), a 14-day grease
-   cycle (rises as the grease ages, drops back after greasing), and a small day-to-day variation.
-4. Gateway: two Modbus blocks per poll exactly like the real gateway ({"PM3032_DATA":[...]},
-   float32 values printed as "%.6f"), once a second. Bad reads 3-5 times a day (negative current,
-   garbage speed, unknown status code, an unencodable "nan"). No data during the weekly scheduled
-   maintenance hour (Sunday 18:00-19:00 IST); otherwise no communication loss.
+1. A mill day (plan_day). Every day (IST) gets a random plan, shaped on the mill's own sample of
+   lost time ("Paper_data_Oct.xlsx": paper tears about 25 % of lost time, breakdowns, power /
+   steam / pulp and planned stops about 18 % each, GSM changes and restart losses about 10 %):
+   - paper tears, 9-15 a day, 8-15 min (more on a steam-problem day);
+   - breakdowns, 1-2 a day, 30-90 min (a motor or a bearing; one of 2.5-3.5 h on a bad day; more
+     the day after the weekly shutdown);
+   - power cuts, steam supply and pulp problems, 2-4 a day (6-8 on a power-cut day), 15-60 min;
+   - planned stops: a daily cleaning (45-75 min) and a 5.5-6.5 h shutdown every Wednesday;
+   - GSM (grade) changes, 3-5 a day: the machine keeps running while speed and steam move to the
+     new grade and the moisture settles;
+   - after every stop the tail is threaded at crawl speed before the paper is on the reel again
+     (restart loss), and the crew brings the speed back gradually (90-95 % of standard, back to
+     standard over 10-30 min);
+   - operators set the speed around the grade's standard: above it when things go well (+2-5 %
+     for 1-4 h), below it when they don't (-4-8 % for 1-3 h on a bad day, about 3 % slower for an
+     hour after repeated tears), well below it when pulp runs short without stopping (-8-14 %),
+     and the night shift (B, 18:00-06:00) runs about 1 % slower. So performance (speed while
+     running against the rated speed) moves around 100 %, above and below.
+   The day type (normal, good, power-cut, steam-problem, breakdown) is drawn at random, so no two
+   days are alike; on average the machine makes paper about 65 % of the time (62-69 % on most days).
+2. How each kind of stop looks in the six registers (status, speed, current, steam, moisture,
+   vibration): a tear keeps the machine turning at crawl speed with the web load gone; a breakdown
+   or a power cut stops it abruptly with the drive off; a planned or pulp stop ramps it down. Some
+   stops show what is coming: a bearing breakdown follows a vibration rise, a motor breakdown an
+   overload, a steam stop a falling steam pressure, a pulp stop a slowdown. Steam goes to standby
+   during a stop and takes minutes to come back, so the paper is wet just after a restart.
+3. The PLC guide's program (Step 5, its RND function and FB_EVENT problem events 1-9 h apart for
+   speed, steam, current and vibration) runs on top, and its links stay: current and vibration
+   follow speed, moisture follows steam a minute later, a wet sheet can tear, a critical overload
+   can trip the motor, a worn or vibrating bearing adds friction current.
+4. Realistic signals: controlled values hold steady, every value is rounded to its sensor's
+   resolution, and the bearing follows its life (bearing_baseline): slow wear over 150 days and a
+   14-day grease cycle.
+5. Gateway: two Modbus blocks per poll exactly like the real gateway ({"PM3032_DATA":[...]},
+   float32 values printed as "%.6f"), once a second. Bad reads 3-5 times a day. No data during the
+   weekly scheduled maintenance of the data system (Sunday 18:00-19:00 IST); the PLC and gateway
+   are on a UPS, so a mill power cut does not interrupt the data.
 """
 
 import datetime as dt
@@ -33,13 +54,15 @@ import pickle
 import random
 import struct
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 SEED = 12345  # the guide's default start number
 ANCHOR = int(dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc).timestamp())  # the model starts here
 GATEWAY_IP = "192.168.18.2"
+IST = ZoneInfo("Asia/Kolkata")
+IST_OFFSET_S = 19800
 
 # scheduled maintenance of the data system: no data, no offline alarm (see asset_config.maintenance)
 MAINTENANCE = {"weekday": "Sunday", "start": "18:00", "end": "19:00", "tz": "Asia/Kolkata"}
@@ -54,6 +77,26 @@ FRICTION_A_PER_MMS = 1.5  # A of extra drive current per mm/s of vibration above
 
 # sensor resolution: what the PLC registers can show
 RESOLUTION = {"speed": 0.1, "current": 0.1, "pressure": 0.01, "moisture": 0.01, "vibration": 0.01}
+
+# grades: name, speed (m/min), steam pressure (bar), share of the time. Moisture follows the steam
+# (moisture_for), so every grade sits on the same steam -> moisture line.
+GRADES = [("80 GSM", 276.5, 4.17, 0.40), ("90 GSM", 270.0, 4.22, 0.25),
+          ("70 GSM", 280.0, 4.12, 0.20), ("85 GSM", 273.0, 4.19, 0.15)]
+RATED_SPEED = 276.5
+CRAWL_SPEED = 100.0  # m/min, tail threading after a tear or a restart
+STANDBY_STEAM = 3.0  # bar, steam pressure held while the machine is stopped
+SHUTDOWN_WEEKDAY = 2  # Wednesday
+
+# what an operator would log as the reason of each kind of stop (Performance -> stoppage log)
+REASONS = {"tear": "Web break", "mechanical": "Mechanical fault", "electrical": "Electrical trip",
+           "power": "Steam / utility issue", "steam": "Steam / utility issue", "pulp": "No material",
+           "cleaning": "Planned maintenance", "shutdown": "Planned maintenance"}
+LOGGED_SHARE = 0.85  # operators log a reason for most stops, not all
+
+
+def moisture_for(steam: float) -> float:
+    """Moisture the dryers settle at for a steam pressure (guide, Step 2)."""
+    return 6.14 + 1.6 * (4.17 - steam)
 
 
 # ---------------------------------------------------------------- calendar
@@ -90,6 +133,76 @@ def bearing_baseline(t: float, seed: int = SEED) -> float:
     i = int(d)
     wobble = _day_wobble(i, seed) + (_day_wobble(i + 1, seed) - _day_wobble(i, seed)) * (d - i)
     return VIB_NEW + wear + lube + wobble
+
+
+# ---------------------------------------------------------------- the mill's day
+
+
+@dataclass
+class Planned:
+    t: int  # earliest start (epoch seconds); it waits while the machine is stopped
+    kind: str  # tear | breakdown | utility | cleaning | shutdown | gsm
+    duration: int = 0  # seconds stopped
+    sub: str = ""  # breakdown: mechanical | electrical; utility: power | steam | pulp
+
+
+DAY_TYPES = (("normal", 0.50), ("good", 0.15), ("power", 0.10), ("steam", 0.15), ("breakdown", 0.10))
+
+
+def mill_day(t: float) -> int:
+    """Index of the IST day that contains t."""
+    return int((t + IST_OFFSET_S) // 86400)
+
+
+def plan_day(day: int, seed: int = SEED) -> tuple[str, list[Planned]]:
+    """A random but repeatable plan for one IST day: (day type, events in time order)."""
+    rng = random.Random(seed * 7907 + day)
+    start = day * 86400 - IST_OFFSET_S  # IST midnight
+    weekday = dt.datetime.fromtimestamp(start + 3600, IST).weekday()
+    kind = rng.choices([k for k, _ in DAY_TYPES], [w for _, w in DAY_TYPES])[0]
+    after_shutdown = weekday == SHUTDOWN_WEEKDAY + 1
+    at = lambda lo_h=0.0, hi_h=24.0: int(start + rng.uniform(lo_h, hi_h) * 3600)  # noqa: E731
+    ev: list[Planned] = []
+    shutdown = weekday == SHUTDOWN_WEEKDAY
+    hours = 0.75 if shutdown else 1.0  # a shutdown day has fewer hours to tear or break down in
+
+    tears = round((rng.randint(9, 12) + (rng.randint(3, 5) if kind == "steam" else 0) ) * hours)
+    ev += [Planned(at(), "tear", rng.randint(480, 900)) for _ in range(tears)]
+
+    n_break = {"good": rng.choice([0, 1, 1]), "breakdown": 0}.get(kind, rng.choice([1, 1, 2]) if kind == "normal" else rng.choice([1, 2])) + (1 if after_shutdown else 0)
+    for _ in range(n_break):
+        ev.append(Planned(at(), "breakdown", rng.randint(2400, 4800), rng.choice(["mechanical", "electrical"])))
+    if kind == "breakdown":  # one long one: a motor or a bearing
+        ev.append(Planned(at(6, 20), "breakdown", rng.randint(9000, 12600), rng.choice(["mechanical", "electrical"])))
+
+    n_util = rng.randint(5, 7) if kind == "power" else rng.randint(1, 3) if kind == "good" or shutdown else rng.randint(3, 4) if kind == "normal" else rng.randint(2, 4)
+    for _ in range(n_util):
+        sub = "power" if kind == "power" else rng.choices(["power", "steam", "pulp"], [0.4, 0.35, 0.25])[0]
+        if kind == "steam" and rng.random() < 0.5:
+            sub = "steam"
+        ev.append(Planned(at(), "utility", rng.randint(1200, 3000) if sub != "power" else rng.randint(900, 2400), sub))
+
+    if shutdown:
+        ev.append(Planned(at(6, 8), "shutdown", rng.randint(19800, 23400)))
+    else:
+        ev.append(Planned(at(6, 14), "cleaning", rng.randint(2700, 4500)))
+
+    ev += [Planned(at(), "gsm") for _ in range(rng.randint(3, 5))]
+
+    # how the crew runs the machine: above standard on a good stretch, below it on a bad one
+    pushes = {"good": rng.randint(2, 3), "normal": rng.choice([0, 1, 1, 2])}.get(kind, rng.choice([0, 0, 1]))
+    lo, hi = (0.04, 0.08) if kind == "good" else (0.02, 0.05)
+    ev += [Planned(at(), "speed", rng.randint(10800, 28800) if kind == "good" else rng.randint(3600, 14400),
+                   f"{rng.uniform(lo, hi):.4f}") for _ in range(pushes)]
+    slow = {"good": 0, "normal": rng.choice([0, 1])}.get(kind, rng.randint(2, 3))
+    ev += [Planned(at(), "speed", rng.randint(7200, 14400), f"{-rng.uniform(0.05, 0.10):.4f}") for _ in range(slow)]
+    if rng.random() < 0.5:  # pulp runs short: the machine keeps going, much slower
+        ev.append(Planned(at(), "speed", rng.randint(2700, 7200), f"{-rng.uniform(0.08, 0.14):.4f}"))
+    # each shift's crew has its own pace that day (the night crew, B, a little slower)
+    ev.append(Planned(start + 6 * 3600, "crew", 0, f"{rng.uniform(-0.015, 0.025):.4f}"))
+    ev.append(Planned(start + 18 * 3600, "crew", 0, f"{rng.uniform(-0.035, 0.005):.4f}"))
+    ev.sort(key=lambda e: e.t)
+    return ("after shutdown" if after_shutdown and kind == "normal" else kind), ev
 
 
 # ---------------------------------------------------------------- PLC program (guide, Step 5)
@@ -165,104 +278,237 @@ def _q(v: float, step: float) -> float:
     return round(round(v / step) * step, 6)
 
 
-class PM01:
-    """PROGRAM PM01_DEMO, executed once per second."""
+@dataclass
+class Stop:
+    kind: str  # tear | mechanical | electrical | power | steam | pulp | cleaning | shutdown
+    remaining: float
+    started: int
 
-    TIMER_STRETCH = 1.25  # random stops a bit rarer, so process trips keep the total near 8 a day
-    WET_TRIP = (7.3, 45.0, 0.3)  # moisture %, sustained seconds, chance that such an episode breaks the sheet
-    OVERLOAD_TRIP = (60.0, 0.6)  # seconds into a critical overload, chance that the drive trips
+    @property
+    def abrupt(self) -> bool:  # the drive trips or loses power: the machine coasts down at once
+        return self.kind in ("mechanical", "electrical", "power")
+
+    @property
+    def drive_on(self) -> bool:  # a tear keeps the machine turning while the tail is threaded
+        return self.kind == "tear"
+
+
+@dataclass
+class Warning_:
+    """What a stop looks like before it happens (vibration rise, overload, steam loss, slowdown)."""
+
+    kind: str
+    remaining: float
+    total: float
+    duration: int
+
+
+class PM01:
+    """The machine, one step per second: the mill's day plan, the guide's program and its links."""
+
+    WET_TRIP = (7.3, 45.0, 0.3)  # moisture %, sustained seconds, chance that such an episode tears the sheet
+    OVERLOAD_TRIP = (60.0, 0.6)  # seconds into a critical overload, chance that the motor trips
     TRIP_HOLDOFF_S = 300.0  # no process trip in the first minutes after a restart (threading)
+    WARNING_S = {"mechanical": (480, 900), "electrical": (120, 300), "steam": (180, 360), "pulp": (300, 600)}
 
     def __init__(self, seed: int = SEED) -> None:
+        self.seed = seed
         self.rnd = Rnd(seed)
         self.extra = random.Random(seed * 31 + 7)  # randomness beyond the guide
-        self.running, self.on_reel = True, True
-        self.time_to_stop, self.stop_length = 5400.0, 0.0
-        self.ev_speed = FbEvent(276.5, 255.0, 235.0, random.Random(seed + 1))
-        self.ev_steam = FbEvent(4.17, 3.40, 3.00, random.Random(seed + 2))
-        self.ev_current = FbEvent(0.0, 20.0, 30.0, random.Random(seed + 3))
-        self.ev_vibration = FbEvent(3.05, 4.8, 5.8, random.Random(seed + 4))
-        self.speed_now, self.moisture_slow, self.pressure_slow = 276.5, 6.14, 4.17
+        # problem events: the warning value crosses the tag's warning limit, the critical value its critical
+        # limit (speed below 230 / 190 m/min, steam below 3.6 / 2.9 bar, current above 160 / 185 A,
+        # vibration above 4.5 / 7.1 mm/s; moisture follows the steam above 7.0 / 8.0 %)
+        self.ev_speed = FbEvent(0.0, -50.0, -95.0, random.Random(seed + 1))  # offsets from the grade's speed
+        self.ev_steam = FbEvent(0.0, -0.77, -1.40, random.Random(seed + 2))  # offsets from the grade's steam
+        self.ev_current = FbEvent(0.0, 26.0, 50.0, random.Random(seed + 3))
+        self.ev_vibration = FbEvent(3.05, 4.8, 7.4, random.Random(seed + 4))
+        self.grade = 0
+        self.speed_now, self.speed_set = GRADES[0][1], GRADES[0][1]
+        self.steam = self.steam_set = GRADES[0][2]
+        self.moisture_slow, self.pressure_slow = 6.14, 4.17
+        self.gsm_bump = 0.0  # moisture disturbance while a new grade settles
+        self.trim = 0.0  # operator's speed setting against the grade's standard (+0.03 = 3 % above)
+        self.crew = 0.0  # the shift crew's own pace
+        self.regime: tuple[float, float] | None = None  # (offset, seconds left) of a planned speed regime
+        self.ramp_left = self.ramp_total = self.ramp_depth = 0.0  # gradual speed-up after a restart
+        self.tears: deque = deque(maxlen=10)  # start seconds of recent tears
         self.n_speed = self.n_current = self.n_pressure = self.n_moisture = self.n_vib = 0.0
         self.n_moisture_extra, self.n_floor = 0.0, 0.5
-        self.run_s = 1e9  # seconds since the last restart
+        self.on_reel = True
+        self.stop: Stop | None = None
+        self.threading = 0.0  # seconds of tail threading left after a stop
+        self.warning: Warning_ | None = None
+        self.run_s = 1e9  # seconds since the paper was last back on the reel
         self.wet_s = self.overload_s = 0.0
         self.wet_decided = self.overload_decided = False
-        self.stops: deque = deque(maxlen=2000)  # start second of each stop
-        self.causes: deque = deque(maxlen=2000)  # "random", "wet sheet break" or "drive overload trip"
+        self.plan_for = -1
+        self.planning = True  # False: no day plan (tests of steady running)
+        self.queue: deque = deque()
+        self.day_type = ""
+        self.stops: deque = deque(maxlen=4000)  # (start second, kind) of each stop
+        self.last_stop: tuple[int, str] | None = None
 
-    def trip(self, t: float, cause: str) -> None:
-        self.running = False
-        self.stop_length = 300.0 + self.extra.random() * 1200.0
-        self.stops.append(t)
-        self.causes.append(cause)
+    @property
+    def running(self) -> bool:
+        return self.stop is None and self.threading <= 0 and self.on_reel
+
+    # ---- plan and stops
+
+    def _plan(self, t: int) -> None:
+        day = mill_day(t)
+        if day != self.plan_for and self.planning:
+            self.plan_for = day
+            self.day_type, events = plan_day(day, self.seed)
+            self.queue.extend(e for e in events if e.t >= t - 1)  # older ones belong to the past
+
+    def start_stop(self, t: int, kind: str, duration: float) -> None:
+        if kind == "tear":
+            self.tears.append(t)
+        self.stop = Stop(kind, duration, t)
+        self.warning = None
+        self.on_reel = False
+        self.stops.append((t, kind))
+        self.last_stop = (t, kind)
+
+    MIN_RUN_S = 600  # a planned event that fell due during a stop waits until the machine has run a while
+
+    def _next_planned(self, t: int) -> None:
+        if self.queue and self.queue[0].t <= t and self.queue[0].kind in ("speed", "crew"):  # crew decisions, any time
+            e = self.queue.popleft()
+            if e.kind == "crew":
+                self.crew = float(e.sub)
+            else:
+                self.regime = (float(e.sub), float(e.duration))
+            return
+        if not self.queue or self.queue[0].t > t or self.run_s < self.MIN_RUN_S:
+            return
+        e = self.queue.popleft()
+        if e.kind == "speed":
+            self.regime = (float(e.sub), float(e.duration))
+        elif e.kind == "gsm":
+            self.grade = self.extra.choice([i for i in range(len(GRADES)) if i != self.grade])
+            self.gsm_bump = self.extra.uniform(0.25, 0.45) * self.extra.choice([1, -1])
+        elif e.kind in ("breakdown", "utility"):
+            sub = e.sub
+            if sub in self.WARNING_S:
+                n = self.extra.uniform(*self.WARNING_S[sub])
+                self.warning = Warning_(sub, n, n, e.duration)
+            else:
+                self.start_stop(t, sub, e.duration)
+        else:
+            self.start_stop(t, e.kind, e.duration)
+
+    # ---- one second
 
     def step(self, t: float, vib_normal: float = VIB_NEW) -> Registers:
-        rnd = self.rnd
-        # 1. noise. Controlled and averaged signals barely move: the drive holds speed within about
-        #    0.1 m/min, the steam controller pressure within about 0.01 bar, and the vibration
-        #    sensor reports an RMS over a few seconds (about 0.01 mm/s of drift).
+        rnd, extra, ti = self.rnd, self.extra, int(t)
+        # 1. noise: controlled and averaged signals barely move
         self.n_speed = 0.98 * self.n_speed + (rnd() - 0.5) * 0.025
         self.n_current = 0.95 * self.n_current + (rnd() - 0.5) * 0.3
         self.n_pressure = 0.97 * self.n_pressure + (rnd() - 0.5) * 0.006
         self.n_moisture = 0.8 * self.n_moisture + (rnd() - 0.5) * 0.05
         self.n_vib = 0.995 * self.n_vib + (rnd() - 0.5) * 0.003
-        extra = self.extra
         self.n_moisture_extra = 0.95 * self.n_moisture_extra + (extra.random() - 0.5) * 0.03
         self.n_floor = min(1.0, max(0.0, self.n_floor + (extra.random() - 0.5) * 0.02))
-        # 2. stops (Step 3)
-        if self.running:
-            self.time_to_stop -= 1.0
-            if self.time_to_stop <= 0.0:
-                self.running = False
-                self.stop_length = 300.0 + rnd() * 1200.0
-                self.stops.append(t)
-                self.causes.append("random")
+
+        # 2. the day's plan: stops, warnings before them, grade changes
+        self._plan(ti)
+        if self.warning is None and (self.running or (self.queue and self.queue[0].kind in ("speed", "crew"))):
+            self._next_planned(ti)
+        if self.regime is not None:
+            self.regime = (self.regime[0], self.regime[1] - 1) if self.regime[1] > 1 else None
+        if self.warning is not None:
+            self.warning.remaining -= 1
+            if self.warning.remaining <= 0:
+                self.start_stop(ti, self.warning.kind, self.warning.duration)
+        if self.stop is not None:
+            self.stop.remaining -= 1
+            if self.stop.remaining <= 0:  # back up: thread the tail at crawl speed first
+                self.threading = extra.uniform(60, 180)
+                self.stop = None
+                self.ramp_total = self.ramp_left = extra.uniform(900, 2400)  # then speed up gradually
+                self.ramp_depth = extra.uniform(0.06, 0.12)
+        elif self.threading > 0 and self.speed_now >= CRAWL_SPEED - 3:
+            self.threading -= 1
+
+        # 3. the guide's problem events, while running
+        running = self.running
+        ev_speed = self.ev_speed(running, rnd, t)
+        ev_steam = self.ev_steam(running, rnd, t)
+        ev_current = self.ev_current(running, rnd, t)
+        ev_vib = self.ev_vibration(running, rnd, t, normal=vib_normal)
+        w = self.warning
+        progress = 1 - w.remaining / w.total if w else 0.0
+
+        # 4. speed: grade speed, crawl while threading, down to zero (or crawl after a tear) when stopped
+        g_name, g_speed, g_steam, _ = GRADES[self.grade]
+        self.speed_set += max(-0.5, min(0.5, g_speed - self.speed_set))  # a grade change moves gently
+        if self.stop is not None:
+            target = CRAWL_SPEED if self.stop.drive_on else 0.0
+            rate = 20.0 if self.stop.abrupt else 3.0
+        elif self.threading > 0:
+            target, rate = CRAWL_SPEED, 3.0
         else:
-            self.stop_length -= 1.0
-            if self.stop_length <= 0.0:
-                self.running = True
-                self.run_s = 0.0
-                self.time_to_stop = (4200.0 + rnd() * 10200.0) * self.TIMER_STRETCH
-        # 3. problem events (Step 4); the vibration event rises from the bearing's condition
-        ev_speed = self.ev_speed(self.running, rnd, t)
-        ev_steam = self.ev_steam(self.running, rnd, t)
-        ev_current = self.ev_current(self.running, rnd, t)
-        ev_vib = self.ev_vibration(self.running, rnd, t, normal=vib_normal)
-        # 4. speed ramps 3 m/min per second
-        target = ev_speed if self.running else 0.0
-        if self.speed_now < target - 3.0:
-            self.speed_now += 3.0
-        elif self.speed_now > target + 3.0:
-            self.speed_now -= 3.0
+            # the crew's setting: planned regime, caution after repeated tears, night shift, restart ramp
+            trim = self.regime[0] if self.regime else 0.0
+            if sum(1 for x in self.tears if ti - x < 3600) >= 2:  # repeated tears: the crew backs off
+                trim -= 0.03
+            trim += self.crew
+            if self.ramp_left > 0:
+                trim -= self.ramp_depth * self.ramp_left / self.ramp_total
+                if self.on_reel:
+                    self.ramp_left -= 1
+            self.trim += max(-0.0005, min(0.0005, trim - self.trim))  # about 0.15 m/min per second
+            target, rate = self.speed_set * (1 + self.trim) + ev_speed, 3.0
+            if w and w.kind == "pulp":  # not enough stock: slow down before stopping
+                target -= 45.0 * progress
+        if self.speed_now < target - rate:
+            self.speed_now += rate
+        elif self.speed_now > target + rate:
+            self.speed_now -= rate
         else:
             self.speed_now = target
         speed = 0.0 if self.speed_now < 1.0 else self.speed_now + self.n_speed
-        # 5. is paper being made?
-        if not self.running:
-            self.on_reel = False
-        elif speed > 270.0:
-            self.on_reel = True
-        # 6. linked values (Step 2)
-        friction = FRICTION_A_PER_MMS * max(0.0, ev_vib - VIB_NEW) * speed / 276.5
-        # load events are drag on the moving machine: none at standstill (e.g. after an overload trip)
-        current = 11.0 + 0.458 * speed + ev_current * min(1.0, speed / 276.5) + friction + self.n_current
-        pressure = ev_steam + self.n_pressure
-        floor = 0.1 + 0.25 * self.n_floor  # sensor noise floor at standstill
-        vibration = max(floor, ev_vib * speed / 276.5 + self.n_vib)
-        # the cylinders heat up again more slowly than the steam pressure returns: right after a
-        # recovery the sheet over-dries for a few minutes
+        if self.stop is None and self.threading <= 0 and not self.on_reel and speed >= target - 3:
+            self.on_reel, self.run_s = True, 0.0  # the paper is on the reel again
+
+        # 5. steam: the grade's pressure while making paper, standby while stopped
+        if self.stop is not None:
+            steam_target, tau = (STANDBY_STEAM - 0.4, 400.0) if self.stop.kind == "power" else (STANDBY_STEAM, 90.0)
+        else:
+            steam_target, tau = g_steam + ev_steam, (120.0 if not self.on_reel else 60.0)
+            if w and w.kind == "steam":  # the steam supply is failing
+                steam_target -= 1.4 * progress
+        self.steam_set += (steam_target - self.steam_set) / tau
+        pressure = self.steam_set + self.n_pressure
+
+        # 6. linked values (guide, Step 2)
+        if w and w.kind == "mechanical":  # a bearing failing: vibration climbs before the breakdown
+            ev_vib += 2.2 * progress
+        friction = FRICTION_A_PER_MMS * max(0.0, ev_vib - VIB_NEW) * speed / RATED_SPEED
+        overload = 28.0 * min(1.0, 2 * progress) if w and w.kind == "electrical" else 0.0
+        if self.stop is not None and not self.stop.drive_on and speed == 0.0:
+            current = 0.0  # drive off
+        elif not self.on_reel:  # turning without the web (tear, threading): no web load
+            current = 11.0 + 0.30 * speed + self.n_current
+        else:
+            current = (11.0 + 0.458 * speed + (ev_current + overload) * min(1.0, speed / RATED_SPEED)
+                       + friction + self.n_current)
+        floor = 0.1 + 0.25 * self.n_floor  # vibration sensor noise floor at standstill
+        vibration = max(floor, ev_vib * speed / RATED_SPEED + self.n_vib)
         self.pressure_slow += (pressure - self.pressure_slow) / 180.0
         overdry = 0.5 * max(0.0, pressure - self.pressure_slow)
-        if self.on_reel:
-            target_m = 6.14 + 1.6 * (4.17 - pressure) - overdry
+        self.gsm_bump *= 1 - 1 / 300.0
+        if self.on_reel:  # the scanner is off the sheet otherwise: it holds its last value
+            target_m = moisture_for(pressure) - overdry + self.gsm_bump
             self.moisture_slow += (target_m - self.moisture_slow) / 60.0
         moisture = self.moisture_slow + self.n_moisture + self.n_moisture_extra
-        # 7. process trips: a wet sheet breaks, an overloaded drive trips (each episode decided once)
+
+        # 7. process trips: a wet sheet tears, an overloaded motor trips (each episode decided once)
         if self.running:
             self.run_s += 1.0
             wet_pct, wet_hold, wet_p = self.WET_TRIP
-            self.wet_s = self.wet_s + 1.0 if self.on_reel and moisture > wet_pct else 0.0
+            self.wet_s = self.wet_s + 1.0 if moisture > wet_pct else 0.0
             if self.wet_s == 0.0:
                 self.wet_decided = False
             ovl_hold, ovl_p = self.OVERLOAD_TRIP
@@ -272,12 +518,13 @@ class PM01:
             if self.run_s >= self.TRIP_HOLDOFF_S:
                 if self.wet_s >= wet_hold and not self.wet_decided:
                     self.wet_decided = True
-                    if self.extra.random() < wet_p:
-                        self.trip(t, "wet sheet break")
+                    if extra.random() < wet_p:
+                        self.start_stop(ti, "tear", extra.uniform(480, 900))
                 elif self.overload_s >= ovl_hold and not self.overload_decided:
                     self.overload_decided = True
-                    if self.extra.random() < ovl_p:
-                        self.trip(t, "drive overload trip")
+                    if extra.random() < ovl_p:
+                        self.start_stop(ti, "electrical", extra.uniform(1200, 2700))
+
         # 8. status, values at the sensors' resolution
         r = RESOLUTION
         return Registers(1 if self.on_reel else 0, _q(speed, r["speed"]), _q(current, r["current"]),
@@ -335,11 +582,16 @@ def gateway_payloads(regs: Registers, glitch: str | None) -> list[bytes]:
 # ---------------------------------------------------------------- the plant: model + gateway over time
 
 
+@dataclass
 class Plant:
     """The PLC and its gateway from ANCHOR on. `t` is the next second to run."""
 
-    def __init__(self, seed: int = SEED, anchor: int = ANCHOR, maintenance: dict | None = MAINTENANCE) -> None:
-        self.seed, self.plc, self.t, self.maintenance = seed, PM01(seed), anchor, maintenance
+    seed: int = SEED
+    anchor: int = ANCHOR
+    maintenance: dict | None = field(default_factory=lambda: dict(MAINTENANCE))
+
+    def __post_init__(self) -> None:
+        self.plc, self.t = PM01(self.seed), self.anchor
         self._glitch_day: tuple[int, dict] | None = None
 
     def glitch(self, t: int) -> str | None:

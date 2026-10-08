@@ -24,6 +24,7 @@ from ..deps import CurrentUser, admin, operator, viewer
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 ROLES = ("machine_status", "speed", "motor_current", "steam_pressure", "moisture", "vibration")
+PERFORMANCE = "performance"  # derived signal in Trends: speed while running ÷ rated speed (asset_config.speed_target)
 STOP_REASONS = ["Unclassified", "Web break", "Grade change", "Planned maintenance", "Felt / wire change",
                 "Steam / utility issue", "Electrical trip", "Mechanical fault", "No material", "Other"]
 
@@ -330,13 +331,18 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
             actual = an.mean([v for _, v in pts])
         if actual is None:
             continue
-        # 1 when actual equals rated; the same gap above or below rated scores the same.
-        ratio = min(actual / rated, rated / actual)
+        # speed: actual / rated, above 100 % when the crew runs faster than rated; any other parameter
+        # scores 1 at rated and the same gap above or below scores the same
+        ratio = actual / rated if speed_tag and name == speed_tag["tag"] else min(actual / rated, rated / actual)
         rated_actual.append({
             "tag": name, "label": spec["label"], "unit": spec["unit"] or "",
             "actual": actual, "rated": rated, "ratio": ratio,
         })
     performance = an.mean([c["ratio"] for c in rated_actual])
+    # lowest and highest speed performance while running in the window (every sample, like the average)
+    perf_range = None
+    if speed_run and isinstance(target, (int, float)) and target:
+        perf_range = {"min": min(v for _, v in speed_run) / float(target), "max": max(v for _, v in speed_run) / float(target)}
 
     # shifts
     pieces = an.split_segments(segs, an.shift_boundaries(start, stop, zone))
@@ -368,6 +374,8 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
             "shift": name, "hours": f"{h0:02d}–{h1:02d}", "run_s": sh["run"], "stop_s": sh["stop"],
             "comms_s": sh["comms"], "availability": sh["run"] / known if known else None, "stops": sh["stops"],
             "avg_speed": an.mean(sh["speed"]),
+            "performance": (an.mean(sh["speed"]) / float(target)
+                            if sh["speed"] and isinstance(target, (int, float)) and target else None),
             "moisture_in_range": sh["moist_in"] / sh["moist_n"] if sh["moist_n"] and lo is not None else None,
             "alarms": sh["alarms"],
         })
@@ -382,6 +390,10 @@ async def performance(device_id: str, hours: float = Query(24, gt=0, le=24 * 7),
         "avg_speed_running": avg_speed,
         "speed_target": target,
         "performance": performance,
+        "performance_range": perf_range,
+        # availability x performance: the share of the time's possible output actually reached
+        "overall": an.availability(tot) * performance
+        if an.availability(tot) is not None and performance is not None else None,
         "rated_actual": rated_actual,
         "speed_tag": tag_public(speed_tag),
         "segments": [{"state": s.state, "start": s.start, "end": s.end} for s in segs],
@@ -910,7 +922,8 @@ async def delete_check(device_id: str, item_id: int, user: CurrentUser = Depends
 async def stats(device_id: str, tags: str, start: dt.datetime = Query(alias="from"), stop: dt.datetime = Query(alias="to"),
                 _: CurrentUser = Depends(viewer)) -> dict:
     asset = await load_asset(device_id)
-    names = [t for t in tags.split(",") if t in asset["tags"]][:20]
+    wanted = tags.split(",")
+    names = [t for t in wanted if t in asset["tags"]][:20]
     s0, s1 = start.timestamp(), stop.timestamp()
     if s1 <= s0 or s1 - s0 > 7 * 86400:
         raise HTTPException(400, "Range must be positive and at most 7 days")
@@ -929,6 +942,17 @@ async def stats(device_id: str, tags: str, start: dt.datetime = Query(alias="fro
             "tag": name, "label": t["label"], "unit": t["unit"], "decimals": t["decimals"], "running_only": running_only,
             "min": min(vals) if vals else None, "avg": an.mean(vals), "max": max(vals) if vals else None,
             "sd": an.stdev(vals), "in_normal": in_normal,
+            "valid": min(1.0, len(all_vals) / expected) if expected else None, "samples": len(all_vals),
+        })
+    speed, target = role_tag(asset, "speed"), (asset["asset_config"] or {}).get("speed_target")
+    if PERFORMANCE in wanted and speed and isinstance(target, (int, float)) and target > 0:
+        # performance: speed while running ÷ rated speed, as on Performance & downtime
+        all_vals = await series(device_id, speed["tag"], s0, s1)
+        vals = [v / target * 100 for _, v in an.in_states(all_vals, segs, {"run"})]
+        out.append({
+            "tag": PERFORMANCE, "label": "Performance", "unit": "%", "decimals": 1, "running_only": True,
+            "min": min(vals) if vals else None, "avg": an.mean(vals), "max": max(vals) if vals else None,
+            "sd": an.stdev(vals), "in_normal": (sum(1 for v in vals if 95 <= v <= 105) / len(vals)) if vals else None,
             "valid": min(1.0, len(all_vals) / expected) if expected else None, "samples": len(all_vals),
         })
     return {"tags": out, "from": iso(s0), "to": iso(s1)}

@@ -121,7 +121,7 @@ export function Login() {
               )}
               <form onSubmit={submit}>
                 <label>
-                  Email
+                  User ID
                   <span className="nq-field">
                     <i>
                       <Icon size={15}>
@@ -129,7 +129,7 @@ export function Login() {
                         <circle cx="12" cy="7" r="4" />
                       </Icon>
                     </i>
-                    <input type="email" autoComplete="username" placeholder="Enter your email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+                    <input type="text" autoComplete="username" autoCapitalize="characters" spellCheck={false} placeholder="Enter your user ID" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
                   </span>
                 </label>
                 <label>

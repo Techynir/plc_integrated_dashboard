@@ -7,6 +7,7 @@ import { useAsset } from "../../hooks";
 import { Chip, fmtDT, fmtDur, fmtNum, fmtPct, Panel, ScreenHead, Tile, WindowNotes } from "../../components/console";
 import { IntervalChart } from "../../components/charts";
 import { ErrorText, Loading } from "../../components/ui";
+import { CloseIcon } from "../../components/icons";
 
 const RANGES = [
   { h: 1, label: "1 h" },
@@ -95,7 +96,7 @@ function Checklist({ deviceId, items }: { deviceId: string; items: CheckItem[] }
             </div>
             {can("admin") && (
               <button className="small ghost danger" onClick={() => confirm(`Remove "${i.title}"?`) && del.mutate(i.id)} aria-label={`Remove ${i.title}`}>
-                ✕
+                <CloseIcon />
               </button>
             )}
           </div>

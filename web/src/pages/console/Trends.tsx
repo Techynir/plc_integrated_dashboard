@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, qs, Tag } from "../../api";
 import { TagStats, useDevice, useHistory, windowEnd } from "../../assetApi";
-import { useAsset } from "../../hooks";
+import { roleTag, useAsset } from "../../hooks";
 import { Chip, fmtDT, fmtNum, fmtPct, fmtT, ScreenHead } from "../../components/console";
-import { Lanes, seriesColor } from "../../components/charts";
+import { Lane, Lanes, seriesColor } from "../../components/charts";
 import { Loading, useNow } from "../../components/ui";
 import { lanesFor, orderTags } from "./Live";
+import { SHIFTS, ShiftKey } from "../../shifts";
 
 const RANGES = [
   { key: "5m", label: "5 min", ms: 5 * 60_000 },
@@ -16,14 +17,23 @@ const RANGES = [
   { key: "24h", label: "24 h", ms: 24 * 3600_000 },
 ];
 
-/** Plant shifts, local time. C runs from 22:00 through 06:00 the next morning. */
-const SHIFTS = [
-  { key: "A", label: "A · 06–14", from: "06:00", to: "14:00" },
-  { key: "B", label: "B · 14–22", from: "14:00", to: "22:00" },
-  { key: "C", label: "C · 22–06", from: "22:00", to: "06:00" },
-] as const;
 
-type ShiftKey = (typeof SHIFTS)[number]["key"];
+/** Derived signal: speed while the machine makes paper ÷ rated speed (same as Performance & downtime). */
+const PERF = "performance";
+
+type Points = [number, number | null, number | null, number | null][];
+
+/** Performance points from the speed and status series (raw samples or buckets share their times).
+ *  Stopped or partly stopped buckets have no performance: the lane shows a gap, not a zero. */
+function performancePoints(speed: Points | undefined, status: Points | undefined, rated: number): Points {
+  if (!speed || !status) return [];
+  const run = new Map(status.map(([t, v]) => [t, v]));
+  return speed.map(([t, v, mn, mx]) => {
+    const st = run.get(t);
+    if (v == null || st == null || st < 0.999) return [t, null, null, null];
+    return [t, (v / rated) * 100, mn != null ? (mn / rated) * 100 : null, mx != null ? (mx / rated) * 100 : null];
+  });
+}
 
 function ymd(ms: number): string {
   const d = new Date(ms);
@@ -61,16 +71,24 @@ export function Trends() {
   const [shift, setShift] = useState<ShiftKey | "">("");
   const [picked, setPicked] = useState<string[] | null>(null);
   const now = useNow(10_000);
-  const tags = useMemo(() => orderTags((detail.data?.tags ?? []).filter((t) => t.data_type === "number")), [detail.data]);
-  // colour follows the tag (its position in the asset's tag list), never the selection
+  const allTags = useMemo(() => orderTags((detail.data?.tags ?? []).filter((t) => t.data_type === "number")), [detail.data]);
+  // the machine status is not trended here (it drives the gaps in Performance)
+  const tags = useMemo(() => allTags.filter((t) => t.role !== "machine_status"), [allTags]);
+  const speedTag = roleTag(allTags, "speed");
+  const statusTag = roleTag(allTags, "machine_status");
+  const rated = asset?.asset_config?.speed_target ?? null;
+  const hasPerf = !!(speedTag && statusTag && rated);
+  // colour follows the signal (its position in the list), never the selection
   const colorOf = useMemo(() => {
-    const idx = new Map(tags.filter((t) => t.role !== "machine_status").map((t, i) => [t.tag, i]));
-    return (t: Tag) => seriesColor(idx.get(t.tag) ?? -1);
+    const idx = new Map([...tags.map((t) => t.tag), PERF].map((k, i) => [k, i]));
+    return (t: Tag | string) => seriesColor(idx.get(typeof t === "string" ? t : t.tag) ?? -1);
   }, [tags]);
 
   useEffect(() => setPicked(null), [id]);
-  const selected = picked ?? tags.filter((t) => t.role !== "machine_status").map((t) => t.tag);
+  const selected = picked ?? [...tags.map((t) => t.tag), ...(hasPerf ? [PERF] : [])];
   const shown = tags.filter((t) => selected.includes(t.tag));
+  const perfOn = hasPerf && selected.includes(PERF);
+  const fetchTags = [...new Set([...shown.map((t) => t.tag), ...(perfOn ? [speedTag!.tag, statusTag!.tag] : [])])];
 
   const span = RANGES.find((r) => r.key === range)!.ms;
   const live = windowEnd(asset?.last_seen, span, Math.floor(now / 10_000) * 10_000);
@@ -79,12 +97,13 @@ export function Trends() {
   const end = custom ? custom.to : live.end;
   const anchored = custom ? false : live.anchored;
   const watching = custom ? end > now : !anchored;
-  const hist = useHistory(id, shown.map((t) => t.tag), from, end, watching ? (end - from <= 3600_000 ? 10_000 : 60_000) : false);
+  const hist = useHistory(id, fetchTags, from, end, watching ? (end - from <= 3600_000 ? 10_000 : 60_000) : false);
+  const statNames = [...shown.map((t) => t.tag), ...(perfOn ? [PERF] : [])].join(",");
   const stats = useQuery({
-    queryKey: ["asset", id, "stats", shown.map((t) => t.tag).join(","), Math.round(from / 60_000), Math.round(end / 60_000)],
+    queryKey: ["asset", id, "stats", statNames, Math.round(from / 60_000), Math.round(end / 60_000)],
     queryFn: () =>
-      api<{ tags: TagStats[] }>(`/assets/${encodeURIComponent(id!)}/stats${qs({ tags: shown.map((t) => t.tag).join(","), from: new Date(from).toISOString(), to: new Date(end).toISOString() })}`),
-    enabled: !!id && shown.length > 0,
+      api<{ tags: TagStats[] }>(`/assets/${encodeURIComponent(id!)}/stats${qs({ tags: statNames, from: new Date(from).toISOString(), to: new Date(end).toISOString() })}`),
+    enabled: !!id && statNames.length > 0,
     placeholderData: (prev) => prev,
   });
 
@@ -124,6 +143,19 @@ export function Trends() {
     const next = on ? [...selected, tag] : selected.filter((t) => t !== tag);
     if (next.length) setPicked(next); // keep at least one signal
   };
+  const lanes: Lane[] = lanesFor(shown, hist.data?.series, undefined, colorOf);
+  if (perfOn) {
+    lanes.push({
+      key: PERF,
+      label: "Performance",
+      unit: "%",
+      decimals: 1,
+      points: performancePoints(hist.data?.series[speedTag!.tag], hist.data?.series[statusTag!.tag], rated!),
+      normal: [95, 105],
+      sub: `speed ÷ rated ${rated} ${speedTag!.unit} · gap = stopped`,
+      color: colorOf(PERF),
+    });
+  }
   const csv = `/api/v1/devices/${encodeURIComponent(asset.device_id)}/export.csv${qs({ tags: shown.map((t) => t.tag).join(","), from: new Date(from).toISOString(), to: new Date(end).toISOString() })}`;
   const records = stats.data?.tags.reduce((n, s) => Math.max(n, s.samples), 0) ?? 0;
 
@@ -177,6 +209,13 @@ export function Trends() {
                 {t.display_name || t.tag}
               </label>
             ))}
+            {hasPerf && (
+              <label title={`Speed while running ÷ rated speed (${rated} ${speedTag!.unit})`}>
+                <input type="checkbox" checked={selected.includes(PERF)} onChange={(e) => toggle(PERF, e.target.checked)} />
+                <i className="swatch" style={{ background: colorOf(PERF) }} aria-hidden="true" />
+                Performance
+              </label>
+            )}
           </div>
           <span className="spacer" />
           <a className="btn" href={csv} download>
@@ -206,7 +245,7 @@ export function Trends() {
           </span>
         </div>
         <Lanes
-          lanes={lanesFor(shown, hist.data?.series, undefined, colorOf)}
+          lanes={lanes}
           from={from}
           to={end}
           gapMs={Math.max((hist.data?.bucket_s ?? 0) * 2000, Math.max(15, asset.asset_config?.comms_timeout_s ?? 15) * 1000)}
@@ -236,7 +275,7 @@ export function Trends() {
               </thead>
               <tbody>
                 {stats.data.tags.map((s) => {
-                  const t = tags.find((x) => x.tag === s.tag);
+                  const t = s.tag === PERF ? PERF : tags.find((x) => x.tag === s.tag);
                   return (
                     <tr key={s.tag}>
                       <td>

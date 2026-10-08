@@ -23,7 +23,7 @@ import asyncpg
 from . import mqtt_accounts, process_rules
 from .config import settings
 from .mqtt_accounts import READ, SUBSCRIBE, WRITE
-from .security import hash_password
+from .security import hash_password, normalize_login
 
 log = logging.getLogger("bootstrap")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -60,7 +60,7 @@ async def ensure_admin_user(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "INSERT INTO users (email, name, password_hash, role) VALUES ($1, 'Administrator', $2, 'admin') "
         "ON CONFLICT (email) DO UPDATE SET role = 'admin', disabled = false, password_hash = EXCLUDED.password_hash",
-        settings.admin_email.lower(),
+        normalize_login(settings.admin_email),
         hash_password(settings.admin_password),
     )
     log.info("created admin user %s", settings.admin_email)
@@ -75,7 +75,7 @@ async def ensure_operator_user(conn: asyncpg.Connection) -> None:
     created = await conn.fetchval(
         "INSERT INTO users (email, name, password_hash, role) VALUES ($1, 'Operator', $2, 'operator') "
         "ON CONFLICT (email) DO NOTHING RETURNING id",
-        settings.operator_email.lower(),
+        normalize_login(settings.operator_email),
         hash_password(settings.operator_password),
     )
     if created:

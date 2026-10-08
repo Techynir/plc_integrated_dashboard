@@ -53,8 +53,18 @@ function UserModal({ user, onClose }: { user?: User; onClose: () => void }) {
     >
       <form className="form-grid" onSubmit={submit}>
         <label className="field">
-          Email
-          <input type="email" value={form.email} disabled={!!user} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+          User ID
+          <input
+            value={form.email}
+            disabled={!!user}
+            onChange={(e) => setForm({ ...form, email: e.target.value.toUpperCase() })}
+            placeholder="e.g. OP2386"
+            pattern="[A-Za-z]{2,4}[0-9]{3,6}"
+            title="Two to four letters and three to six digits, e.g. OP2386"
+            autoCapitalize="characters"
+            spellCheck={false}
+            required
+          />
         </label>
         <label className="field">
           Name

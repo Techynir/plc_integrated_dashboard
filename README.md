@@ -33,7 +33,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-- Dashboard: http://localhost:8080. Log in as `admin@example.com` / `admin12345` (set in `.env`).
+- Dashboard: http://localhost:8080. Log in with user ID `AD4127` / `admin12345` (set in `.env` as `ADMIN_EMAIL` / `ADMIN_PASSWORD`). Logins are user IDs such as `AD4127` (admin) or `OP2386` (operator); an e-mail address is still accepted.
 - MQTT: `localhost:1883` for internal/dev use, and `localhost:8883` over TLS.
 - Web simulator: http://localhost:8081 (admin login).
 - Database: host `127.0.0.1` (not `localhost`: it is published on IPv4 only), port `5432`, database/user `plc`, password `plc-dev-password`.

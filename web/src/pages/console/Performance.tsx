@@ -8,17 +8,10 @@ import { fmtDT, fmtDur, fmtNum, MissingRole, Panel, ScreenHead, Tile, WindowNote
 import { Lanes, StateLegend, StateStrip } from "../../components/charts";
 import { ErrorText, Loading } from "../../components/ui";
 import { lanesFor } from "./Live";
+import { SHIFTS, ShiftKey, SHIFT_HOURS } from "../../shifts";
 
 const HOURS = 24;
 
-/** Plant shifts, local time. C runs from 22:00 through 06:00 the next morning. */
-const SHIFTS = [
-  { key: "A", label: "A · 06–14", from: "06:00", to: "14:00" },
-  { key: "B", label: "B · 14–22", from: "14:00", to: "22:00" },
-  { key: "C", label: "C · 22–06", from: "22:00", to: "06:00" },
-] as const;
-
-type ShiftKey = (typeof SHIFTS)[number]["key"];
 
 function ymd(ms: number): string {
   const d = new Date(ms);
@@ -95,7 +88,6 @@ export function Performance() {
 
   if (!asset) return <div className="panel empty">No asset selected.</div>;
 
-  const target = p?.speed_target ?? null;
   const stops = ((range ? log.data?.stops : p?.stops) ?? []).slice().reverse();
   const nowMs = Date.now();
   const dayOfData = ymd(asset.last_seen ? new Date(asset.last_seen).getTime() : nowMs);
@@ -147,7 +139,12 @@ export function Performance() {
         <>
           <WindowNotes window={p.window} stateSource={p.state_source} />
           <div className="tiles">
-            <Tile k="Availability" v={p.availability != null ? (p.availability * 100).toFixed(1) : "—"} unit="%" s="run ÷ (run + stopped)" />
+            <Tile
+              k="Availability"
+              v={p.availability != null ? (p.availability * 100).toFixed(1) : "—"}
+              unit="%"
+              s={`run ÷ (run + stopped)${p.totals.comms >= 1 ? ` · no PLC link ${fmtDur(p.totals.comms)}, left out` : ""}`}
+            />
             <Tile k="Run time" v={hours(p.totals.run)} unit="h" s={`of ${hours(withData)} h with data`} />
             <Tile k="Stops" v={p.stops.length} s={`${fmtDur(p.totals.stop)} total`} />
             <Tile k="Longest stop" v={p.longest_stop_s ? fmtDur(p.longest_stop_s) : "—"} />
@@ -157,13 +154,17 @@ export function Performance() {
               unit="%"
               s={
                 p.rated_actual.length
-                  ? `actual vs rated · ${p.rated_actual.map((r) => `${r.label} ${fmtNum(r.actual, 1)} / ${fmtNum(r.rated, 1)}`).join(" · ")}`
-                  : target
-                    ? `avg speed ${fmtNum(p.avg_speed_running, 1)} · rated ${fmtNum(target, 1)}`
-                    : "no rated values set"
+                  ? `speed while running ÷ rated · ${p.rated_actual.map((r) => `${fmtNum(r.actual, 1)} / ${fmtNum(r.rated, 1)} ${r.unit}`).join(" · ")}`
+                  : "no rated speed set"
               }
+              cls={p.performance != null && p.performance > 1 ? "good" : undefined}
             />
-            <Tile k="No PLC link" v={fmtDur(p.totals.comms)} s="excluded from availability" />
+            <Tile
+              k="Overall"
+              v={p.overall != null ? (p.overall * 100).toFixed(1) : "—"}
+              unit="%"
+              s="availability × performance"
+            />
           </div>
 
           <Panel title="Machine state · 24 h" actions={<StateLegend />}>
@@ -184,17 +185,18 @@ export function Performance() {
           </Panel>
 
           <div className="grid g-7-5">
-            <Panel title="Shift comparison" sub="A 06–14 · B 14–22 · C 22–06">
+            <Panel title="Shift comparison" sub={SHIFT_HOURS}>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Shift</th>
-                      <th className="num">Run time</th>
-                      <th className="num">Availability</th>
+                      <th className="num">Run</th>
+                      <th className="num">Avail.</th>
                       <th className="num">Stops</th>
                       <th className="num">Avg speed</th>
-                      <th className="num">Moisture in range</th>
+                      <th className="num">Perf.</th>
+                      <th className="num" title="Moisture inside its normal range while running">Moisture OK</th>
                       <th className="num">Alarms</th>
                     </tr>
                   </thead>
@@ -211,6 +213,7 @@ export function Performance() {
                         </td>
                         <td className="num">{s.stops}</td>
                         <td className="num">{fmtNum(s.avg_speed, 1)}</td>
+                        <td className="num">{s.performance != null ? `${(s.performance * 100).toFixed(1)} %` : "—"}</td>
                         <td className="num">{s.moisture_in_range != null ? `${(s.moisture_in_range * 100).toFixed(1)} %` : "—"}</td>
                         <td className="num">{s.alarms}</td>
                       </tr>
@@ -218,7 +221,7 @@ export function Performance() {
                   </tbody>
                 </table>
               </div>
-              <p className="foot">▲ best availability. Shift boundaries follow local plant time ({p.timezone}).</p>
+              <p className="foot">▲ best availability. Perf. = speed while running ÷ rated speed. Shift boundaries follow local plant time ({p.timezone}).</p>
             </Panel>
             <Panel title="Stoppage log" sub={`${rangeText} · classify reasons to build a Pareto over time`}>
               <div className="toolbar" style={{ marginBottom: 10 }}>

@@ -14,7 +14,7 @@ import statistics
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-SHIFTS = (("A", 6, 14), ("B", 14, 22), ("C", 22, 6))
+SHIFTS = (("A", 6, 18), ("B", 18, 6))  # two 12-hour shifts; the machine runs 24/7
 
 # keyword -> machine state, same vocabulary as the ingestor's status_from_label
 _STATUS_WORDS = [
@@ -138,11 +138,11 @@ def shift_of(t: float, tz: ZoneInfo) -> str:
     for name, h0, h1 in SHIFTS:
         if (h0 < h1 and h0 <= hour < h1) or (h0 > h1 and (hour >= h0 or hour < h1)):
             return name
-    return "C"
+    return SHIFTS[-1][0]
 
 
 def shift_boundaries(start: float, end: float, tz: ZoneInfo) -> list[float]:
-    """Epoch times of 06:00, 14:00, 22:00 local within (start, end)."""
+    """Epoch times of the shift changes (06:00 and 18:00 local) within (start, end)."""
     out = []
     day = dt.datetime.fromtimestamp(start, tz).date() - dt.timedelta(days=1)
     last = dt.datetime.fromtimestamp(end, tz).date() + dt.timedelta(days=1)

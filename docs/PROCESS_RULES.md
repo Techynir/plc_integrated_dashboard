@@ -21,11 +21,13 @@ This note covers how the five PM-01 measurements affect each other on a paper ma
 
 | Register | Tag | Unit | Normal range | Warning | Critical |
 |---|---|---|---|---|---|
-| 400002 | Machine_Speed | m/min | 274–279 (target 276.5) | below 260 | below 240 |
-| 400004 | Main_Motor_Current | A | 134–142 | above 155 | above 165 |
-| 400006 | Dryer_Steam_Pressure | bar | 4.10–4.25 | below 3.5 | below 3.1 |
-| 400008 | Paper_Moisture | % | 5.9–6.4 | above 7.0 | above 7.5 |
-| 400010 | Main_Bearing_Vibration | mm/s | 2.8–3.3 | above 4.5 | above 5.5 |
+| 400002 | Machine_Speed | m/min | 250–305 (rated 276.5) | below 230 | below 190 |
+| 400004 | Main_Motor_Current | A | 125–152 | above 160 | above 185 |
+| 400006 | Dryer_Steam_Pressure | bar | 4.10–4.25 | below 3.6 | below 2.9 |
+| 400008 | Paper_Moisture | % | 5.9–6.4 | above 7.0 | above 8.0 |
+| 400010 | Main_Bearing_Vibration | mm/s | 2.7–3.6 | above 4.5 | above 7.1 (ISO 10816-3 C/D) |
+
+Limits as set on 2026-10-08: warning and critical are kept well apart, so a warning gives time to act before the critical level.
 
 ## 1. What affects what
 

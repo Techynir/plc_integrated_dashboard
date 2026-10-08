@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from .. import db
 from ..config import settings
 from ..deps import CurrentUser, current_user
-from ..security import clear_session_cookie, hash_password, set_session_cookie, verify_password
+from ..security import clear_session_cookie, hash_password, normalize_login, set_session_cookie, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -50,11 +50,11 @@ async def login(body: LoginIn, request: Request, response: Response) -> dict:
 
     row = await db.pool().fetchrow(
         "SELECT id, email, name, role, password_hash, disabled FROM users WHERE email = $1",
-        body.email.strip().lower(),
+        normalize_login(body.email),
     )
     if row is None or row["disabled"] or not verify_password(body.password, row["password_hash"]):
         _failures[ip].append(time.monotonic())
-        raise HTTPException(401, "Invalid email or password")
+        raise HTTPException(401, "Invalid user ID or password")
 
     await db.pool().execute("UPDATE users SET last_login_at = now() WHERE id = $1", row["id"])
     await db.audit(row["email"], "login", details={"ip": ip})

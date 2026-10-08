@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import type { Severity } from "../api";
+import { CloseIcon } from "./icons";
 
 /** Current time, re-rendering every `ms` (for "5s ago" style labels and staleness). */
 export function useNow(ms = 1000): number {
@@ -127,7 +128,7 @@ export function Modal({
         <div className="card-header">
           <h2>{title}</h2>
           <button className="ghost small" onClick={onClose} aria-label="Close">
-            ✕
+            <CloseIcon />
           </button>
         </div>
         <div className="modal-body">{children}</div>

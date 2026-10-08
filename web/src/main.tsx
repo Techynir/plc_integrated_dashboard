@@ -31,6 +31,7 @@ import "@fontsource/barlow-condensed/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "./theme.css";
+import { AlarmToasts } from "./components/AlarmToasts";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -81,6 +82,8 @@ function Authenticated() {
   }, [qc]);
 
   return (
+    <>
+      <AlarmToasts />
     <Layout>
       <Routes>
         <Route path="/" element={<Overview />} />
@@ -103,6 +106,7 @@ function Authenticated() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
+    </>
   );
 }
 

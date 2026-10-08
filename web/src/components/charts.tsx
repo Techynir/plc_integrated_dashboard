@@ -165,8 +165,9 @@ export interface Lane {
   step?: boolean;
   valueLabels?: Record<string, string> | null;
   current?: string;
-  /** OK when the live value is in its normal state, otherwise NG. */
-  verdict?: "OK" | "NG";
+  /** OK when the live value is in its normal state, NG when not (the whole row turns red), STOP while the
+   *  machine is stopped and the value is not expected to be normal (e.g. crawl speed during a tear). */
+  verdict?: "OK" | "NG" | "STOP";
   /** Where an NG verdict opens, usually Alarms & events for this tag. */
   verdictHref?: string;
   sub?: string;
@@ -211,7 +212,10 @@ export function Lanes({
     const pattern = hatch(t.comms);
     const top = 6;
     const axisH = 22;
-    const grids = lanes.map((_, i) => ({ left: 52, right: 14, top: top + i * laneHeight, height: laneHeight - 14 }));
+    const grids = lanes.map((l, i) => ({
+      left: 52, right: 14, top: top + i * laneHeight, height: laneHeight - 14,
+      ...(l.verdict === "NG" ? { show: true, backgroundColor: withAlpha(t.critical, 0.1), borderWidth: 0 } : {}),
+    }));
     const xAxes = lanes.map((_, i) => ({
       type: "time", gridIndex: i, min: from, max: to, ...axisCommon(t),
       axisLabel: { ...axisCommon(t).axisLabel, show: i === lanes.length - 1, hideOverlap: true, formatter: (v: number) => fmtT(v, to - from < 3600_000) },
@@ -297,7 +301,7 @@ export function Lanes({
       {showValues && (
         <div className="labels" style={{ paddingTop: 0 }}>
           {lanes.map((l) => (
-            <div key={l.key} className="ll" style={{ height: laneHeight }}>
+            <div key={l.key} className={`ll${l.verdict === "NG" ? " ng" : ""}`} style={{ height: laneHeight }}>
               <b>
                 {l.color && <i className="swatch" style={{ background: l.color }} />}
                 {l.label}
@@ -312,14 +316,17 @@ export function Lanes({
       {readout && (
         <div className="readout">
           {lanes.map((l) => (
-            <div key={l.key} className="rv" style={{ height: laneHeight }}>
+            <div key={l.key} className={`rv${l.verdict === "NG" ? " ng" : ""}`} style={{ height: laneHeight }}>
               <span className="lv">{l.current || "—"}</span>
               {l.verdict === "NG" && l.verdictHref ? (
                 <Link to={l.verdictHref} className="verdict ng" title={`Show ${l.label} in Alarms & events`}>
                   NG
                 </Link>
               ) : (
-                <span className={`verdict ${l.verdict === "OK" ? "ok" : "ng"}`}>{l.verdict ?? "NG"}</span>
+                <span className={`verdict ${l.verdict === "OK" ? "ok" : l.verdict === "STOP" ? "stop" : "ng"}`}
+                  title={l.verdict === "STOP" ? "Machine stopped: this value is not expected to be normal now" : undefined}>
+                  {l.verdict ?? "NG"}
+                </span>
               )}
             </div>
           ))}

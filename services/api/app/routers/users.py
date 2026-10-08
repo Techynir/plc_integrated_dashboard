@@ -6,17 +6,17 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..deps import CurrentUser, admin
-from ..security import hash_password
+from ..security import LOGIN_PATTERN, hash_password, normalize_login
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 Role = Literal["viewer", "operator", "admin"]
 USER_COLUMNS = "id, email, name, role, disabled, created_at, last_login_at"
-EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+# a user ID such as OP2386 (stored in capitals) or an e-mail address (stored in lower case)
 
 
 class UserCreate(BaseModel):
-    email: str = Field(pattern=EMAIL_PATTERN, max_length=254)
+    email: str = Field(pattern=LOGIN_PATTERN, max_length=254, description="user ID (e.g. OP2386) or e-mail")
     name: str = Field(default="", max_length=120)
     role: Role = "viewer"
     password: str = Field(min_length=8, max_length=256)
@@ -53,11 +53,11 @@ async def create_user(body: UserCreate, user: CurrentUser = Depends(admin)) -> d
     try:
         row = await db.pool().fetchrow(
             f"INSERT INTO users (email, name, role, password_hash) VALUES ($1, $2, $3, $4) RETURNING {USER_COLUMNS}",
-            body.email.lower(), body.name, body.role, hash_password(body.password),
+            normalize_login(body.email), body.name, body.role, hash_password(body.password),
         )
     except asyncpg.UniqueViolationError as exc:
-        raise HTTPException(409, "A user with this email already exists") from exc
-    await db.audit(user.email, "user.create", body.email.lower(), {"role": body.role})
+        raise HTTPException(409, "A user with this user ID already exists") from exc
+    await db.audit(user.email, "user.create", normalize_login(body.email), {"role": body.role})
     return user_dict(row)
 
 

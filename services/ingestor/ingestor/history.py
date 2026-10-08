@@ -36,7 +36,9 @@ from . import main as live
 from .bursts import QUIET_S
 from .main import Ingestor
 from .pm01 import (  # noqa: F401  (re-exported for tests and tools)
+    LOGGED_SHARE,
     PM01,
+    REASONS,
     SEED,
     VIB_NEW,
     Plant,
@@ -54,6 +56,7 @@ from .store import Store
 class Message:
     received_at: float  # epoch seconds
     payload: bytes
+    stop: str | None = None  # the machine stopped at this poll (kind of stop), for the operator's log
 
 
 def generate(plant: Plant, start: int, end: int, follow: bool = False, jitter_seed: int = SEED + 7):
@@ -61,7 +64,6 @@ def generate(plant: Plant, start: int, end: int, follow: bool = False, jitter_se
     The plant is first run up to `start`. With follow, `end` moves with the clock until caught up."""
     plant.advance_to(start)
     plc = plant.plc
-    stops0, events0 = len(plc.stops), {n: len(e.events) for n, e in _events(plc)}
     jitter = random.Random(jitter_seed)
     stats = {"polls": 0, "maintenance_s": 0, "bad_reads": 0, "messages": 0}
     while True:
@@ -70,6 +72,7 @@ def generate(plant: Plant, start: int, end: int, follow: bool = False, jitter_se
                 break
             end = int(time.time())
         t, _regs, payloads = plant.poll()
+        stopped = plc.last_stop[1] if plc.last_stop and plc.last_stop[0] == t else None
         if not payloads:
             stats["maintenance_s"] += 1
             continue
@@ -77,14 +80,14 @@ def generate(plant: Plant, start: int, end: int, follow: bool = False, jitter_se
         stats["bad_reads"] += plant.glitch(t) is not None
         at = t + jitter.uniform(0.02, 0.12)  # the gateway publishes each poll as soon as it has read it
         for k, payload in enumerate(payloads):
-            yield Message(at + k * jitter.uniform(0.0009, 0.0013), payload)
+            yield Message(at + k * jitter.uniform(0.0009, 0.0013), payload, stopped if k == 0 else None)
             stats["messages"] += 1
     stats["end"] = plant.t
-    causes = list(plc.causes)[len(plc.causes) - (len(plc.stops) - stops0):] if len(plc.stops) > stops0 else []
-    stats["stops"] = len(causes)
-    stats["stop_causes"] = {c: causes.count(c) for c in sorted(set(causes))}
+    kinds = [k for t0, k in plc.stops if t0 >= start]
+    stats["stops"] = len(kinds)
+    stats["stop_kinds"] = {c: kinds.count(c) for c in sorted(set(kinds))}
     stats["events"] = {
-        name: {k: sum(1 for kind, _ in list(ev.events)[events0[name]:] if kind == k) for k in ("warning", "critical")}
+        name: {k: sum(1 for kind, t0 in ev.events if kind == k and t0 >= start) for k in ("warning", "critical")}
         for name, ev in _events(plc)
     }
     yield stats
@@ -213,6 +216,7 @@ async def run(args: argparse.Namespace) -> None:
 
     started = time.monotonic()
     clock = {"next_housekeeping": float(s0), "last_report": 0.0}
+    stop_log: list[tuple[float, str]] = []  # (start, kind) of every stop, for the operator's log
 
     async def replay_all(items) -> dict:
         for item in items:
@@ -225,6 +229,8 @@ async def run(args: argparse.Namespace) -> None:
                 clock["next_housekeeping"] += live.HOUSEKEEPING_INTERVAL_S
             replay.now = dt.datetime.fromtimestamp(item.received_at, dt.timezone.utc)
             await replay.handle(topic, item.payload)  # releases earlier bursts, then holds this message
+            if item.stop:
+                stop_log.append((item.received_at, item.stop))
             if time.monotonic() - clock["last_report"] > 15:
                 clock["last_report"] = time.monotonic()
                 behind = time.time() - item.received_at
@@ -235,6 +241,14 @@ async def run(args: argparse.Namespace) -> None:
     stats = await replay_all(generate(plant, s0, e0, follow=args.follow))
     await replay.release_bursts(replay.now, force=True)
     await replay.flush()
+
+    # what the operators logged: a reason for most stops, keyed by the stop's first record
+    pick = random.Random(args.seed + 99)
+    logged = [(args.device_id, dt.datetime.fromtimestamp(at, dt.timezone.utc), REASONS[kind], "operator log")
+              for at, kind in stop_log if pick.random() < LOGGED_SHARE]
+    await pool.executemany("INSERT INTO stoppage_reasons (device_id, started_at, reason, set_by) VALUES ($1, $2, $3, $4) "
+                           "ON CONFLICT DO NOTHING", logged)
+    print(f"operator log: {len(logged)} of {len(stop_log)} stops have a reason")
 
     print("rebuilding 1-minute and 1-hour rollups")
     async with pool.acquire() as conn:

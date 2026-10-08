@@ -4,7 +4,18 @@ import { Chip, fmtDT, fmtNum, MissingRole, Panel, ScreenHead } from "../../compo
 import { Lanes, Projection, Scatter } from "../../components/charts";
 import { ErrorText, Loading, useNow } from "../../components/ui";
 import { Insights } from "../../components/rules";
+import { useState } from "react";
 import { lanesFor } from "./Live";
+
+/** Time ranges for the vibration trend. Short ranges show every reading, longer ones 1-min or 1-h averages
+ *  (with a min-max envelope). */
+const VIB_RANGES = [
+  { key: "10m", label: "10 min", ms: 10 * 60_000 },
+  { key: "1h", label: "1 h", ms: 3600_000 },
+  { key: "8h", label: "8 h", ms: 8 * 3600_000 },
+  { key: "24h", label: "24 h", ms: 24 * 3600_000 },
+  { key: "7d", label: "7 days", ms: 7 * 86_400_000 },
+];
 
 const STATE = {
   good: { cls: "ok" as const, label: "Good" },
@@ -40,9 +51,17 @@ export function Health() {
   const detail = useDevice(id, 60_000);
   const now = useNow(10_000);
   const vibTag = roleTag(detail.data?.tags, "vibration");
-  const span = 10 * 60_000;
+  const [vibRange, setVibRange] = useState("1h");
+  const range = VIB_RANGES.find((r) => r.key === vibRange)!;
+  const span = range.ms;
   const { end, anchored } = windowEnd(asset?.last_seen, span, Math.floor(now / 10_000) * 10_000);
-  const hist = useHistory(id, vibTag ? [vibTag.tag] : [], end - span, end, anchored ? false : 10_000);
+  const hist = useHistory(
+    id,
+    vibTag ? [vibTag.tag] : [],
+    end - span,
+    end,
+    anchored ? false : span <= 3600_000 ? 10_000 : 60_000,
+  );
 
   if (!asset) return <div className="panel empty">No asset selected.</div>;
   const d = h.data;
@@ -143,14 +162,26 @@ export function Health() {
                 </>
               )}
             </Panel>
-            <Panel title="Vibration · last 10 minutes" sub={slope !== null ? `Slope over 5 min: ${signed(slope, 3)} ${vt?.unit ?? ""} per min` : undefined}>
+            <Panel
+              title={`Vibration · last ${range.label}`}
+              sub={slope !== null ? `Slope over the last 5 min: ${signed(slope, 3)} ${vt?.unit ?? ""} per min` : undefined}
+              actions={
+                <div className="segmented" role="group" aria-label="Vibration time range">
+                  {VIB_RANGES.map((r) => (
+                    <button key={r.key} type="button" className={vibRange === r.key ? "on" : ""} aria-pressed={vibRange === r.key} onClick={() => setVibRange(r.key)}>
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+              }
+            >
               {vibTag ? (
                 <>
                   <Lanes
                     lanes={lanesFor([vibTag], hist.data?.series, (t) => (d.inputs.vibration != null ? `${fmtNum(d.inputs.vibration, 2)} ${t.unit}` : "—"))}
                     from={end - span}
                     to={end}
-                    gapMs={15_000}
+                    gapMs={Math.max((hist.data?.bucket_s ?? 0) * 2000, 15_000)}
                     laneHeight={170}
                   />
                   <div className="note" style={{ marginTop: 8 }}>

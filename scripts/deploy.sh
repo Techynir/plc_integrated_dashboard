@@ -75,7 +75,7 @@ if [ ! -f "$SETTINGS" ]; then
     cat > "$SETTINGS" <<EOF
 # Non-secret deployment settings (safe to commit). Secrets: GCP Secret Manager, see deploy/secrets.list.
 # Set SITE_ADDRESS / MQTT_PUBLIC_HOST to your own domain (DNS A record -> $IP) if you have one.
-ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+ADMIN_EMAIL=${ADMIN_EMAIL:-AD4127}
 SITE_ADDRESS=$HOST
 MQTT_PUBLIC_HOST=$HOST
 MQTT_EXTRA_SANS=$IP

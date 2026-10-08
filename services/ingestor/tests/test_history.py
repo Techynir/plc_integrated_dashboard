@@ -50,56 +50,114 @@ TAG_CFG = {
 }
 
 
-@pytest.fixture(scope="module")
-def two_days():
-    plc = PM01()
-    regs = [plc.step(s) for s in range(2 * DAY)]
-    return plc, regs
+DAY0 = int(dt.datetime(2026, 9, 7, tzinfo=IST).timestamp())  # a Monday, 00:00 IST
 
 
 @pytest.fixture(scope="module")
-def week():
-    plc = PM01()
-    regs = [plc.step(s) for s in range(7 * DAY)]
-    return plc, regs
+def two_weeks():
+    """Two weeks from a Monday: registers per second and the machine's stop log."""
+    plant = Plant()
+    plant.advance_to(DAY0)
+    regs = [plant.poll()[1] for _ in range(14 * DAY)]
+    stops = [(t, k) for t, k in plant.plc.stops if t >= DAY0 + 900]  # inside the window
+    return stops, regs
 
 
-def test_status_is_one_while_running_and_zero_only_in_stops(two_days):
-    plc, regs = two_days
-    assert regs[0].status == 1
+def test_status_is_one_only_while_paper_is_made(two_weeks):
+    stops, regs = two_weeks
     assert {r.status for r in regs} == {0, 1}
     assert all(r.speed > 0 for r in regs if r.status == 1)
     stopped = [r for r in regs if r.status == 0]
-    assert min(r.speed for r in stopped) == 0.0
-    assert max(r.current for r in stopped if r.speed == 0) < 13  # ~11 A at standstill
+    assert max(r.current for r in stopped if r.speed == 0) < 1  # drive off at standstill
     standstill = [r.vibration for r in stopped if r.speed == 0]
-    assert 0.1 <= min(standstill) and max(standstill) < 0.45  # sensor noise floor
-    assert len(set(standstill)) > 5  # never one fixed value
+    assert 0.1 <= min(standstill) and max(standstill) < 0.45 and len(set(standstill)) > 5  # sensor noise floor
 
 
-def test_stops_per_day_and_speed_never_jumps(two_days):
-    plc, regs = two_days
-    assert 10 <= len(plc.stops) <= 24
-    jumps = [abs(b.speed - a.speed) for a, b in zip(regs, regs[1:]) if a.speed and b.speed]
-    assert max(jumps) < 3.5  # 3 m/min per second ramp
+def test_availability_and_lost_time_like_the_mill(two_weeks):
+    """Paper on the reel 62-69 % of the time on average; tears are the biggest loss."""
+    stops, regs = two_weeks
+    days = [sum(r.status for r in regs[d * DAY:(d + 1) * DAY]) / DAY for d in range(14)]
+    assert 0.58 <= sum(days) / 14 <= 0.70
+    assert max(days) - min(days) > 0.08  # no two days alike
+    kinds = [k for _t, k in stops]
+    per_day = len(kinds) / 14
+    assert 13 <= per_day <= 28
+    assert 9 <= kinds.count("tear") / 14 <= 18
+    assert {"tear", "mechanical", "electrical", "cleaning", "shutdown"} <= set(kinds)
+    assert {"power", "steam", "pulp"} & set(kinds)
 
 
-def test_every_driver_has_problem_events(two_days):
-    plc, regs = two_days
-    for ev in (plc.ev_speed, plc.ev_steam, plc.ev_current, plc.ev_vibration):
-        assert len(ev.events) >= 6
-    running = [r for r in regs if r.status == 1]
-    assert min(r.speed for r in running) < 260
-    assert max(r.current for r in running) > 155
-    assert min(r.pressure for r in regs) < 3.5
-    assert max(r.moisture for r in regs) > 7.0
-    assert max(r.vibration for r in running) > 4.5
+def test_weekly_shutdown_on_wednesday(two_weeks):
+    stops, _ = two_weeks
+    shutdowns = [t for t, k in stops if k == "shutdown"]
+    assert len(shutdowns) == 2
+    assert all(dt.datetime.fromtimestamp(t, IST).weekday() == 2 for t in shutdowns)
+
+
+def _stop_window(stops, regs, kind):
+    t0 = next(t for t, k in stops if k == kind)
+    i = int(t0 - DAY0)
+    return regs[i - 5:i + 120]
+
+
+def test_a_tear_keeps_the_machine_turning_without_the_web(two_weeks):
+    stops, regs = two_weeks
+    w = _stop_window(stops, regs, "tear")
+    before, after = w[0], w[-1]
+    assert before.status == 1 and after.status == 0
+    assert 95 <= after.speed <= 105  # crawl speed for threading
+    assert after.current < 11 + 0.30 * 105 + 2  # web load gone
+
+
+def test_a_breakdown_stops_the_machine_at_once_with_the_drive_off(two_weeks):
+    stops, regs = two_weeks
+    w = _stop_window(stops, regs, "mechanical")
+    assert w[0].status == 1 and w[-1].speed == 0.0 and w[-1].current == 0.0
+    assert next(k for k, r in enumerate(w) if r.speed == 0.0) < 25  # coasts down in seconds, not minutes
+
+
+def test_a_bearing_breakdown_shows_rising_vibration_first(two_weeks):
+    stops, regs = two_weeks
+    t0 = next(t for t, k in stops if k == "mechanical")
+    i = int(t0 - DAY0)
+    before = [r.vibration for r in regs[i - 900:i - 600]]
+    just_before = [r.vibration for r in regs[i - 30:i - 5]]
+    assert max(just_before) - min(before) > 1.0
+
+
+def test_restart_threads_at_crawl_before_the_paper_is_on_the_reel(two_weeks):
+    stops, regs = two_weeks
+    i = next(k for k in range(1, len(regs)) if regs[k - 1].status == 0 and regs[k].status == 1)
+    crawl = [r for r in regs[i - 600:i] if 95 <= r.speed <= 105]
+    assert len(crawl) >= 50  # about 1-3 minutes of threading
+    assert 225 < regs[i].speed < 285  # on the reel at reduced speed ...
+    later = [r.speed for r in regs[i + 2400:i + 2700] if r.status == 1]
+    if later:  # ... and back up over the next 10-40 min (unless the next stop came first)
+        assert sum(later) / len(later) > regs[i].speed
+
+
+def test_performance_goes_above_and_below_rated(two_weeks):
+    """Speed while running against the rated 276.5 m/min, per 12-hour shift: crews push and hold back."""
+    _stops, regs = two_weeks
+    perf = []
+    for k in range(28):
+        run = [r.speed for r in regs[k * 43200:(k + 1) * 43200] if r.status == 1]
+        perf.append(sum(run) / len(run) / 276.5)
+    assert 0.92 <= sum(perf) / len(perf) <= 0.99
+    assert min(perf) < 0.95 and max(perf) > 1.0
+
+
+def test_grade_changes_keep_the_machine_running(two_weeks):
+    _stops, regs = two_weeks
+    speeds = {round(r.speed) for r in regs if r.status == 1 and r.speed > 262}
+    assert {270, 273, 276, 277, 280} & speeds and max(speeds) - min(speeds) >= 9  # several grades
 
 
 def test_signals_are_steady_at_steady_speed():
-    """First hour: running at full speed with no event. Controlled and averaged values hold still."""
+    """A steady hour with no plan: controlled and averaged values hold still."""
     plc = PM01()
-    regs = [plc.step(s) for s in range(3600)][600:]
+    plc.planning = False
+    regs = [plc.step(DAY0 + s) for s in range(3600)][600:]
     assert max(r.speed for r in regs) - min(r.speed for r in regs) <= 0.4
     assert max(r.pressure for r in regs) - min(r.pressure for r in regs) <= 0.05
     vib = [r.vibration for r in regs]
@@ -113,19 +171,21 @@ def test_signals_are_steady_at_steady_speed():
     assert all(274 <= r.speed <= 279 and 134 <= r.current <= 142 and 4.10 <= r.pressure <= 4.25 for r in regs)
 
 
-def test_some_stops_are_caused_by_the_process(week):
-    plc, _ = week
-    trips = [c for c in plc.causes if c != "random"]
-    assert 4 <= len(trips) <= 20
-    assert 6 * 7 <= len(plc.stops) <= 11 * 7
+def test_day_plans_are_random_but_repeatable():
+    from ingestor.pm01 import plan_day
+    days = [plan_day(d) for d in range(20700, 20714)]
+    assert len({k for k, _ in days}) >= 3  # several kinds of day
+    assert plan_day(20705) == plan_day(20705)
+    counts = [sum(1 for e in ev if e.kind == "tear") for _, ev in days]
+    assert min(counts) < max(counts)
 
 
-def test_vibration_adds_friction_current(week):
-    _, regs = week
+def test_vibration_adds_friction_current(two_weeks):
+    _, regs = two_weeks
     full = [r for r in regs if r.status == 1 and abs(r.speed - 276.5) < 2]
     calm = [r.current for r in full if r.vibration < 3.4 and r.current < 145]
     shaky = [r.current for r in full if r.vibration > 4.6 and r.current < 145]
-    assert 1.5 < sum(shaky) / len(shaky) - sum(calm) / len(calm) < 5
+    assert 1.0 < sum(shaky) / len(shaky) - sum(calm) / len(calm) < 6
 
 
 def test_bearing_wears_over_its_life_and_greasing_helps():
@@ -187,7 +247,7 @@ def test_payload_matches_the_real_gateway_and_decodes():
 
 
 def test_bad_reads_are_rejected_like_live():
-    regs = PM01().step(0)
+    regs = PM01().step(DAY0)
     now = dt.datetime.now(dt.timezone.utc)
     for kind in ("negative_current", "garbage_speed", "unknown_status"):
         reasons = []
@@ -213,7 +273,7 @@ def _held(at: float, payload: bytes) -> Held:
 
 def test_burst_spacing_gives_each_poll_its_own_second():
     """A gateway that buffers 5 polls and sends them together every 5 s: each poll gets its second."""
-    regs = PM01().step(0)
+    regs = PM01().step(DAY0)
     arrivals = []
     for burst in range(12):
         at = 1_000_000.0 + 5 * burst + 0.07
@@ -246,3 +306,38 @@ def test_other_formats_are_not_held():
 def test_pickled_plant_is_small():
     assert len(pickle.dumps(Plant())) < 100_000
     json.dumps(MAINTENANCE)
+
+
+def test_problem_events_reach_the_warning_and_critical_limits(two_weeks):
+    """Warning and critical limits are far apart; the data still reaches both, for every signal."""
+    _stops, regs = two_weeks
+    run = [r for r in regs if r.status == 1]
+    speed = [r.speed for r in run]
+    assert min(speed) < 230 and sum(v < 190 for v in speed) > 30
+    current = [r.current for r in run]
+    assert max(current) > 160 and sum(v > 185 for v in current) > 30
+    steam = [r.pressure for r in run]
+    assert min(steam) < 3.6 and sum(v < 2.9 for v in steam) > 30
+    moisture = [r.moisture for r in run]
+    assert max(moisture) > 7.0 and sum(v > 8.0 for v in moisture) > 30
+    vibration = [r.vibration for r in run]
+    assert max(vibration) > 4.5 and sum(v > 7.1 for v in vibration) > 30
+
+
+def test_live_operator_logs_most_stops_once():
+    from types import SimpleNamespace
+
+    from ingestor.live_sim import LOG_DELAY_S, OperatorLog
+
+    op = OperatorLog("pm")
+    plant = SimpleNamespace(plc=SimpleNamespace(last_stop=None))
+    for k in range(400):
+        plant.plc.last_stop = (1_800_000_000 + k * 3000, "tear")
+        op.note(plant)
+        op.note(plant)  # the same stop seen again: logged once
+    assert 0.78 * 400 <= len(op.pending) <= 0.92 * 400  # about 85 % get a reason
+    assert all(LOG_DELAY_S[0] <= at - t0 <= LOG_DELAY_S[1] and kind == "tear" for at, t0, kind in op.pending)
+    again = OperatorLog("pm")
+    plant.plc.last_stop = (1_800_000_000, "tear")
+    again.note(plant)
+    assert again.pending[:1] == [p for p in op.pending if p[1] == 1_800_000_000]  # repeatable

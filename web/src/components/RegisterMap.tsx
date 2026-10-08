@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { ErrorText } from "./ui";
+import { CloseIcon, WarningIcon } from "./icons";
 
 type DataType = "int16" | "uint16" | "int32" | "uint32" | "float32" | "float64" | "bool";
 
@@ -135,7 +136,9 @@ export function RegisterMapEditor({ deviceId }: { deviceId: string }) {
         {notes && (notes.errors.length > 0 || notes.warnings.length > 0) && (
           <div style={{ marginTop: 10 }}>
             {notes.errors.map((e) => (
-              <div key={e} className="error-text">⚠ {e}</div>
+              <div key={e} className="error-text">
+                <WarningIcon size={14} /> {e}
+              </div>
             ))}
             {notes.warnings.map((w) => (
               <div key={w} className="small" style={{ color: "var(--ink-2)" }}>ℹ {w}</div>
@@ -204,7 +207,7 @@ export function RegisterMapEditor({ deviceId }: { deviceId: string }) {
                 </td>
                 <td>
                   <button className="small ghost" onClick={() => setRows(list.filter((_, j) => j !== i))} aria-label="Remove">
-                    ✕
+                    <CloseIcon />
                   </button>
                 </td>
               </tr>

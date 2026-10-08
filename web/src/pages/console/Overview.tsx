@@ -1,7 +1,8 @@
 import { useQueries } from "@tanstack/react-query";
 import { api } from "../../api";
-import { Performance, Summary, useAnalytics } from "../../assetApi";
-import { useAsset } from "../../hooks";
+import { Performance, Summary, useAnalytics, useDevice } from "../../assetApi";
+import { mergeLive, roleTag, runningNow, useAsset } from "../../hooks";
+import { useLiveDevice } from "../../live";
 import { fmtDur, fmtPct, ScreenHead, Tile } from "../../components/console";
 import { Loading } from "../../components/ui";
 import { Live } from "./Live";
@@ -9,6 +10,8 @@ import { Live } from "./Live";
 export function Overview() {
   const { asset, assets, loading } = useAsset();
   const perf = useAnalytics<Performance>(asset?.device_id, "performance", 24);
+  const detail = useDevice(asset?.device_id, 60_000);
+  const live = useLiveDevice(asset?.device_id);
   const summaries = useQueries({
     queries: assets.map((d) => ({
       queryKey: ["asset", d.device_id, "summary", 24],
@@ -31,6 +34,15 @@ export function Overview() {
   const p = perf.data;
   const rated = p?.rated_actual ?? [];
   const who = assets.length > 1 ? asset?.name || asset?.device_id : null;
+  // performance right now: the live speed ÷ rated speed while the machine makes paper
+  const d = detail.data;
+  const merged = d ? mergeLive(d, live) : null;
+  const speedTag = roleTag(d?.tags, "speed");
+  const ratedSpeed = d?.asset_config?.speed_target ?? null;
+  const running = d && merged ? runningNow(d, d.tags ?? [], merged.value, merged.status, false) : null;
+  const speedNow = speedTag && merged ? merged.value(speedTag) : null;
+  const perfNow = merged?.online && running && typeof speedNow === "number" && ratedSpeed ? speedNow / ratedSpeed : null;
+  const pct = (v: number | null | undefined) => (v != null ? (v * 100).toFixed(1) : "—");
 
   return (
     <div className="screen">
@@ -49,13 +61,29 @@ export function Overview() {
           s={p ? `${p.stops.length} stops${who ? ` · ${who}` : ""}` : ""}
         />
         <Tile
-          k="Performance · 24 h"
-          v={p?.performance != null ? (p.performance * 100).toFixed(1) : "—"}
-          unit="%"
+          k={`Performance · now${who ? ` · ${who}` : ""}`}
+          v={perfNow != null ? pct(perfNow) : merged && !merged.online ? "No data" : running === false ? "Stopped" : "—"}
+          unit={perfNow != null ? "%" : undefined}
+          cls={perfNow != null && perfNow > 1 ? "good" : undefined}
           s={
-            rated.length
-              ? `actual vs rated · ${rated.length} parameter${rated.length === 1 ? "" : "s"}${who ? ` · ${who}` : ""}`
-              : "no rated values set"
+            rated.length ? (
+              <span className="submetrics" title="Speed while running ÷ rated speed, last 24 h">
+                <span>
+                  <em>Avg 24 h</em>
+                  {pct(p?.performance)} %
+                </span>
+                <span>
+                  <em>Min</em>
+                  {pct(p?.performance_range?.min)} %
+                </span>
+                <span>
+                  <em>Max</em>
+                  {pct(p?.performance_range?.max)} %
+                </span>
+              </span>
+            ) : (
+              "no rated speed set"
+            )
           }
         />
       </div>

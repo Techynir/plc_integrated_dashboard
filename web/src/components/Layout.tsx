@@ -8,6 +8,7 @@ import { useLiveConnection, useLiveDevice } from "../live";
 import { formatAge, secondsSince } from "../format";
 import { ChangePasswordModal } from "./ChangePassword";
 import { useNow } from "./ui";
+import { ExternalIcon, MenuIcon, MoonIcon, SunIcon } from "./icons";
 
 type Theme = "light" | "dark";
 
@@ -196,7 +197,7 @@ export function Layout({ children }: { children: ReactNode }) {
     <div className="app">
       <header className="topbar">
         <button className="small mobile-bar" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu" aria-expanded={menuOpen}>
-          ☰
+          <MenuIcon />
         </button>
         <NavLink to={"/" + assetQs} className="brand" aria-label="Numerique">
           <img className="logo" src="/Numerique2.png" alt="Numerique" />
@@ -211,7 +212,7 @@ export function Layout({ children }: { children: ReactNode }) {
           aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
           title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
         >
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
       </header>
       <aside className={`sidebar${menuOpen ? " open" : ""}`}>
@@ -252,7 +253,7 @@ export function Layout({ children }: { children: ReactNode }) {
               {links.data?.simulator_url && (
                 <a className="nav-link" href={links.data.simulator_url} target="_blank" rel="noopener">
                   <span>Simulator</span>
-                  <span aria-hidden="true">↗</span>
+                  <ExternalIcon />
                 </a>
               )}
             </NavGroup>
@@ -272,7 +273,7 @@ export function Layout({ children }: { children: ReactNode }) {
             </button>
           </div>
           <NavLink to={`${location.pathname}?kiosk=1${assetQs ? "&" + assetQs.slice(1) : ""}`} className="small">
-            Kiosk mode ↗
+            Kiosk mode <ExternalIcon size={13} />
           </NavLink>
         </div>
       </aside>

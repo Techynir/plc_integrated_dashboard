@@ -713,3 +713,28 @@ details.panel > summary:focus-visible { outline: 2px solid var(--accent); outlin
 .explain dd { margin: 0; color: var(--ink); }
 td .explain, .alarmlist .explain { margin-top: 4px; font-size: 12px; }
 @media (max-width: 640px) { .explain { grid-template-columns: 1fr; } .explain dt { padding-top: 6px; } }
+
+/* small metrics under a tile's main value (e.g. Performance: avg / min / max) */
+.submetrics { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 2px 14px; margin-top: 2px; }
+.submetrics > span { display: flex; flex-direction: column; font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+.submetrics em { font-style: normal; font-family: var(--font); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-muted); }
+
+/* alarm pop-ups, bottom-right corner */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 10px; width: min(380px, calc(100vw - 32px)); }
+.toast { background: var(--surface); border: 1px solid var(--border-strong); border-left: 4px solid var(--warning); border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(8, 15, 30, 0.22); padding: 10px 12px; font-size: 13px; display: grid; gap: 4px; animation: toast-in 0.18s ease-out; }
+.toast.crit { border-left-color: var(--critical); background: var(--critical-soft); }
+.toast .thead { display: flex; align-items: center; gap: 8px; }
+.toast .thead .x { margin-left: auto; font-size: 16px; line-height: 1; padding: 2px 8px; }
+.toast .tfoot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px; }
+.toast.more { text-align: center; font-weight: 600; border-left-color: var(--border-strong); text-decoration: none; color: var(--ink); }
+@keyframes toast-in { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+
+/* a row that is NG on the plant overview / live lanes: the whole row is red */
+.lanes .ll.ng, .lanes .rv.ng { background: var(--critical-soft); }
+.lanes .ll.ng b { color: var(--critical-ink, var(--critical)); }
+.lanes .verdict.stop { color: var(--ink-muted); }
+
+/* line icons inside buttons and links */
+.icon { display: inline-block; vertical-align: -2px; flex: none; }

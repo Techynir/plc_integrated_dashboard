@@ -57,8 +57,8 @@ printf '%s' 'NEW-VALUE' | gcloud secrets versions add plc-mqtt-admin-password --
 
 | User | Role | Can |
 |---|---|---|
-| `admin@example.com` | admin | Everything: devices and credentials, tags, alarm rules, users, audit log |
-| `operator@example.com` | operator | View everything and acknowledge alarms. No configuration. |
+| `AD4127` | admin | Everything: devices and credentials, tags, alarm rules, users, audit log |
+| `OP2386` | operator | View everything and acknowledge alarms. No configuration. |
 
 - **Add users, change roles, reset passwords:** **Admin → Users**. Each person should get their own account.
 - **Change your own password:** every user can do this with **Change password** at the bottom of the left menu. It needs the current password. Changing a password, or an admin resetting it, signs that user out on every other browser and device.
@@ -218,19 +218,27 @@ PM-01 is fed by a simulated gateway that never stops. The model is in `services/
 - **`pm01-sim` service (live).** It publishes the gateway's real messages once a second on the device's topic `plc/<site>/<line>/<device>/telemetry`: `{"PM3032_DATA":[...]}`, with D1 = 400002–400011 and D2 = 400001. They go through the normal broker → ingestor path, like a real gateway. It saves its model state to the `simstate` volume every 10 s and on shutdown, so a restart continues from the same second. It also sends any polls missed during a short pause (up to 5 minutes), like the gateway's buffer; the ingestor gives each poll its own second. Set `SIM_ENABLED=0` in `.env` to keep it idle, for example when the real gateway is connected.
 - **`python -m ingestor.history` (stored history).** It fills the last N days through the live ingestor's own handler with a simulated clock. Decoding, bad-read rejection, status, raw data, limit and process-rule alarms, and offline detection all behave as in production. With `--follow` it keeps going until it has caught up with the clock, then saves the model for `pm01-sim`.
 
-What the data contains:
+What the data contains. The lost time is shaped on the mill's own sample (`Paper_data_Oct.xlsx`): every IST day gets a random plan, so no two days are alike. On average the machine makes paper about 64 % of the time (normal days about 66 %, good days about 72 %, power-cut, steam-problem and breakdown days 56–61 %, the Wednesday shutdown day about 53 %), losing about 8.8 h a day.
 
-| Scenario | Source |
-|---|---|
-| Linked values: current and vibration follow speed; moisture follows steam about a minute later | Guide, Steps 1–2 |
-| Steady signals. Speed is held within about 0.1 m/min, steam pressure within about 0.01 bar, and vibration drifts about 0.01 mm/s at a steady speed. Every value is rounded to its sensor's resolution (speed 0.1, current 0.1 A, pressure 0.01 bar, moisture 0.01 %, vibration 0.01 mm/s), so readings repeat for long stretches without freezing | Generator |
-| About 8 stops a day: status 0, speed ramps down and up at 3 m/min per second. Most are random; about 1–2 a day are caused by the process (a wet sheet breaks, a critical overload trips the drive) | Guide, Step 3, plus generator |
-| Problem events for speed, steam (and so moisture), motor current and vibration, 1–9 h apart, each with its own ramp rate and length (2–15 min); about 1 in 5 reaches the critical value | Guide, Step 4, made irregular |
-| Bearing life. Vibration at full speed follows the bearing: slow, accelerating wear over a 150-day life (a new bearing on 12 Jan 2027, then every 150 days); a 14-day grease cycle (rises as the grease ages, drops back after greasing on alternate Mondays at 10:00 IST); a small day-to-day variation | Generator |
-| A vibrating or worn bearing adds friction: +1.5 A per mm/s above normal at full speed | Generator |
-| The sheet over-dries for a few minutes after steam pressure recovers; at standstill vibration reads a sensor noise floor (0.1–0.35 mm/s) | Generator |
-| Bad reads 3–5 a day: negative current, garbage speed float, unknown status code (65535), `nan` in the data | Gateway |
-| **Scheduled maintenance:** no data every Sunday 18:00–19:00 IST. The asset's `asset_config.maintenance` (`{"weekday": "Sunday", "start": "18:00", "end": "19:00", "tz": "Asia/Kolkata"}`) suppresses the offline alarm for that hour. The screens show it as "Scheduled maintenance", and Data quality lists it as a planned outage. There is no other communication loss | Gateway / asset configuration |
+| What happens | How often, how long | How it looks in the six registers |
+|---|---|---|
+| Paper tear (web break) | 10–13 a day (more on a steam-problem day, and when the sheet is wet), 8–15 min | Status 0 at once; the machine keeps turning at 100 m/min crawl speed; current drops (no web load); steam to standby; moisture holds |
+| Breakdown: bearing or motor | 1–2 a day (more the day after the shutdown; one of 2.5–3.5 h on a breakdown day), 40–80 min | A bearing: vibration climbs for 8–15 min first. A motor: an overload (+28 A) for 2–5 min first. Then the machine coasts to 0 in seconds and the drive is off (0 A) |
+| Power cut | part of 2–4 utility stops a day (5–7 on a power-cut day), 15–40 min | Coasts to 0 in seconds, drive off, steam falls slowly. The PLC and gateway are on a UPS: data keeps coming |
+| Steam supply problem | part of the utility stops, 20–50 min | Steam pressure falls over 3–6 min (moisture rises, tears get likely), then the machine is stopped |
+| Pulp shortage | part of the utility stops, 20–50 min | The machine slows down by up to 45 m/min over 5–10 min, then is stopped |
+| Daily cleaning | once a day between 06:00 and 14:00, 45–75 min | Ramps down to 0, drive off, steam to standby |
+| Weekly shutdown | every Wednesday from 06:00–08:00, 5.5–6.5 h | Ramps down to 0, drive off, steam to standby |
+| Restart (restart loss) | after every stop, 1–3 min plus the ramps | The tail is threaded at crawl speed; status goes back to 1 when the paper is on the reel, at 88–94 % of the grade's speed; the crew brings it back to standard over 10–30 min; steam takes a few minutes to recover, so the paper is wet at first |
+| Crew speed setting | all the time | Two 12-hour shifts, A 06:00–18:00 and B 18:00–06:00 (the machine runs 24/7); each crew has its own pace that day (B a little slower). On a good stretch the crew runs above the grade's standard speed (+2–8 % for hours), on a bad one below it (−5–10 %), about 3 % slower for an hour after repeated tears, and 8–14 % slower when pulp runs short without stopping. Performance (speed while running ÷ rated 276.5 m/min) is about 96 % on average: about 99 % on good days (some above 100 %), 93–94 % on bad days |
+| GSM (grade) change | 3–5 a day | The machine keeps running (status 1): speed and steam move to the new grade (80 GSM 276.5 m/min 4.17 bar, 90 GSM 270 / 4.22, 70 GSM 280 / 4.12, 85 GSM 273 / 4.19), moisture settles over about 10 min |
+| Problem events (PLC guide) | speed dips, steam drops, overloads, vibration spikes, each 1–9 h apart, 2–15 min | As before: a wet sheet can tear, a critical overload can trip the motor |
+| Steady signals, sensor resolution, bearing life, bad reads | as before | Speed within 0.1 m/min, steam 0.01 bar, vibration 0.01 mm/s at steady running; 150-day bearing life and 14-day grease cycle; 3–5 bad reads a day |
+| Scheduled maintenance of the data system | Sunday 18:00–19:00 IST | No data; no offline alarm (`asset_config.maintenance`); shown as "Scheduled maintenance" |
+
+The history also writes the operators' stop log: about 85 % of stops get a reason (Web break, Mechanical fault, Electrical trip, Steam / utility issue, No material, Planned maintenance) on the Performance screen; the rest stay "Unclassified", as in a real mill. The live simulator logs reasons the same way: about 85 % of its stops get one, 3–30 min after the stop starts (an operator filling it in), keyed to the stop's first stopped record; a reason somebody already chose is never replaced.
+
+The tag settings assume this, with warning and critical limits well apart: speed normal 250–305 m/min (covers crews running above standard), warning below 230, critical below 190; motor current normal 125–152 A (follows speed), warning above 160, critical above 185; steam pressure normal 4.10–4.25 bar, warning below 3.6, critical below 2.9 (held while the machine is stopped: steam goes to standby during every stop); moisture normal 5.9–6.4 %, warning above 7.0, critical above 8.0; bearing vibration normal 2.7–3.6 mm/s, warning above 4.5, critical above 7.1 (ISO 10816-3 zone boundaries). The simulator's problem events are sized so that each signal reaches both levels now and then.
 
 To rebuild the stored history and hand over to the live simulator without a gap (on the VM, prefix each command with `sudo`):
 
@@ -238,7 +246,7 @@ To rebuild the stored history and hand over to the live simulator without a gap 
 docker compose exec -T db pg_dump -U plc -Fc plc > backup.dump        # always back up first
 docker compose stop ingestor pm01-sim
 docker compose run --rm --no-deps -e HISTORY_CONFIRM=1 pm01-sim \
-  python -m ingestor.history conveyer-plc-line-01 --days 7 --replace --follow   # --dry-run to preview
+  python -m ingestor.history conveyer-plc-line-01 --days 10 --replace --follow  # --dry-run to preview
 docker compose up -d ingestor pm01-sim                                 # right after it finishes
 ```
 
