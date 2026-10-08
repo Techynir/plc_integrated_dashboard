@@ -8,7 +8,8 @@ import { useLiveConnection, useLiveDevice } from "../live";
 import { formatAge, secondsSince } from "../format";
 import { ChangePasswordModal } from "./ChangePassword";
 import { useNow } from "./ui";
-import { ExternalIcon, MenuIcon, MoonIcon, SunIcon } from "./icons";
+import { MenuIcon, MoonIcon, SunIcon } from "./icons";
+import { MobileNav, NavSection, TopNav, UserMenu } from "./TopNav";
 
 type Theme = "light" | "dark";
 
@@ -112,49 +113,6 @@ function AssetSelect() {
   );
 }
 
-/** Sidebar section that can be collapsed; remembers its state and opens itself when one of its pages is active. */
-function NavGroup({ id, title, paths, children }: { id: string; title: string; paths: string[]; children: ReactNode }) {
-  const key = `plc-nav-${id}`;
-  const location = useLocation();
-  const activeInside = paths.some((p) => location.pathname === p || (p.endsWith("/") && location.pathname.startsWith(p)));
-  const [open, setOpen] = useState(() => {
-    try {
-      return localStorage.getItem(key) !== "0";
-    } catch {
-      return true;
-    }
-  });
-  useEffect(() => {
-    if (activeInside) setOpen(true);
-  }, [activeInside]);
-  const toggle = () => {
-    setOpen((o) => {
-      try {
-        localStorage.setItem(key, o ? "0" : "1");
-      } catch {
-        /* storage unavailable */
-      }
-      return !o;
-    });
-  };
-  const bodyId = `nav-${id}-items`;
-  return (
-    <nav className="navgrp" aria-label={title}>
-      <h4>
-        <button type="button" className="navtoggle" aria-expanded={open} aria-controls={bodyId} onClick={toggle}>
-          <span>{title}</span>
-          <svg viewBox="0 0 12 12" aria-hidden="true">
-            <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      </h4>
-      <div id={bodyId} className="navitems" hidden={!open}>
-        {children}
-      </div>
-    </nav>
-  );
-}
-
 export function Layout({ children }: { children: ReactNode }) {
   const { user, can, logout } = useAuth();
   const [params] = useSearchParams();
@@ -186,97 +144,95 @@ export function Layout({ children }: { children: ReactNode }) {
 
   // keep the selected asset when moving between screens
   const assetQs = params.get("asset") ? `?asset=${encodeURIComponent(params.get("asset")!)}` : "";
-  const link = (to: string, label: string, extra?: ReactNode, keepAsset = true) => (
-    <NavLink to={to + (keepAsset ? assetQs : "")} end={to === "/"} className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}>
-      <span>{label}</span>
-      {extra}
-    </NavLink>
-  );
+  const badge = unacked.length > 0 ? (
+    <span className={`navbadge${critical ? "" : " w"}`} title={`${unacked.length} unacknowledged`}>
+      {unacked.length}
+    </span>
+  ) : null;
+  const sections: NavSection[] = [
+    {
+      id: "operations",
+      title: "Operations",
+      badge,
+      items: [
+        { to: "/", label: "Plant overview", desc: "Live state, key figures and every signal at a glance" },
+        { to: "/trends", label: "Trends & historian", desc: "Any signal over time, with statistics and export" },
+        { to: "/alarms", label: "Alarms & events", desc: "Active alarms, acknowledgement and history", badge },
+      ],
+    },
+    {
+      id: "analytics",
+      title: "Analytics",
+      items: [
+        { to: "/performance", label: "Performance & downtime", desc: "Availability, performance, stops and shifts" },
+        { to: "/quality", label: "Process quality", desc: "Paper moisture control chart and capability" },
+        { to: "/health", label: "Asset health", desc: "Bearing, drive and dryer condition" },
+      ],
+    },
+    ...(can("admin")
+      ? [
+          {
+            id: "platform",
+            title: "Platform",
+            items: [
+              { to: "/data-quality", label: "Data quality & link", desc: "Completeness, update rate and outages" },
+              { to: "/config", label: "Asset configuration", desc: "Connection, tags, limits and roles" },
+              { to: "/raw", label: "Raw data", desc: "Messages exactly as the gateway sent them", keepAsset: false },
+              { to: "/system", label: "System health", desc: "Pipeline, database and broker", keepAsset: false },
+            ],
+          },
+          {
+            id: "admin",
+            title: "Admin",
+            items: [
+              { to: "/admin/devices", label: "Devices", desc: "PLCs, their logins and register maps", keepAsset: false },
+              { to: "/admin/rules", label: "Alarm rules", desc: "Limit rules and the built-in process rules", keepAsset: false },
+              { to: "/admin/users", label: "Users", desc: "Accounts, roles and passwords", keepAsset: false },
+              { to: "/admin/audit", label: "Audit log", desc: "Who changed what, and when", keepAsset: false },
+              { to: "/admin/logs", label: "Logs", desc: "Service logs", keepAsset: false },
+              ...(links.data?.simulator_url
+                ? [{ to: links.data.simulator_url, label: "Simulator", desc: "Web simulator for test devices", external: true }]
+                : []),
+            ],
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div className="app">
-      <header className="topbar">
-        <button className="small mobile-bar" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu" aria-expanded={menuOpen}>
-          <MenuIcon />
-        </button>
-        <NavLink to={"/" + assetQs} className="brand" aria-label="Numerique">
-          <img className="logo" src="/Numerique2.png" alt="Numerique" />
-        </NavLink>
-        <AssetSelect />
-        <LinkPill />
-        <span className="spacer" />
-        <Clock />
-        <button
-          className="small ghost"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-        >
-          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-        </button>
-      </header>
-      <aside className={`sidebar${menuOpen ? " open" : ""}`}>
-        <nav className="navgrp" aria-label="Operations">
-          <h4>Operations</h4>
-          {link("/", "Plant overview")}
-          {link("/trends", "Trends & historian")}
-          {link(
-            "/alarms",
-            "Alarms & events",
-            unacked.length > 0 ? (
-              <span className={`navbadge${critical ? "" : " w"}`} title={`${unacked.length} unacknowledged`}>
-                {unacked.length}
-              </span>
-            ) : null,
-          )}
-        </nav>
-        <nav className="navgrp" aria-label="Analytics">
-          <h4>Analytics</h4>
-          {link("/performance", "Performance & downtime")}
-          {link("/quality", "Process quality")}
-          {link("/health", "Asset health")}
-        </nav>
-        {can("admin") && (
-          <>
-            <NavGroup id="platform" title="Platform" paths={["/data-quality", "/config", "/raw", "/system"]}>
-              {link("/data-quality", "Data quality & link")}
-              {link("/config", "Asset configuration")}
-              {link("/raw", "Raw data", undefined, false)}
-              {link("/system", "System health", undefined, false)}
-            </NavGroup>
-            <NavGroup id="admin" title="Admin" paths={["/admin/"]}>
-              {link("/admin/devices", "Devices", undefined, false)}
-              {link("/admin/rules", "Alarm rules", undefined, false)}
-              {link("/admin/users", "Users", undefined, false)}
-              {link("/admin/audit", "Audit log", undefined, false)}
-              {link("/admin/logs", "Logs", undefined, false)}
-              {links.data?.simulator_url && (
-                <a className="nav-link" href={links.data.simulator_url} target="_blank" rel="noopener">
-                  <span>Simulator</span>
-                  <ExternalIcon />
-                </a>
-              )}
-            </NavGroup>
-          </>
-        )}
-        <div className="sidebar-footer">
-          <div>
-            <div style={{ color: "var(--ink)", fontWeight: 600 }}>{user.name || user.email}</div>
-            <div className="muted">{user.role}</div>
-          </div>
-          <div className="row">
-            <button className="small" onClick={() => setChangingPassword(true)}>
-              Change password
-            </button>
-            <button className="small" onClick={logout}>
-              Sign out
-            </button>
-          </div>
-          <NavLink to={`${location.pathname}?kiosk=1${assetQs ? "&" + assetQs.slice(1) : ""}`} className="small">
-            Kiosk mode <ExternalIcon size={13} />
+      <header className="appbar">
+        <div className="topbar">
+          <button className="small mobile-bar" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu" aria-expanded={menuOpen}>
+            <MenuIcon />
+          </button>
+          <NavLink to={"/" + assetQs} className="brand" aria-label="Numerique">
+            <img className="logo" src="/Numerique2.png" alt="Numerique" />
           </NavLink>
+          <AssetSelect />
+          <LinkPill />
+          <span className="spacer" />
+          <Clock />
+          <button
+            className="small ghost iconbtn"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+          >
+            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+          </button>
+          <UserMenu
+            name={user.name}
+            login={user.email}
+            role={user.role}
+            kioskTo={`${location.pathname}?kiosk=1${assetQs ? "&" + assetQs.slice(1) : ""}`}
+            onChangePassword={() => setChangingPassword(true)}
+            onSignOut={logout}
+          />
         </div>
-      </aside>
+        <TopNav sections={sections} assetQs={assetQs} />
+      </header>
+      {menuOpen && <MobileNav sections={sections} assetQs={assetQs} onNavigate={() => setMenuOpen(false)} />}
       <main className="main">{children}</main>
       {changingPassword && <ChangePasswordModal onClose={() => setChangingPassword(false)} />}
     </div>
